@@ -15,13 +15,16 @@ running when you finish.
 
 STEP 1 — ASK ME THESE QUESTIONS (do not skip)
 
-A) API CREDENTIALS LOCATION
-   Ask me: "Describe where your API credentials are on your computer — full path or folder (e.g. Downloads\My API file.txt, or credentials folder)."
+A) API CREDENTIALS (paste in chat OR point to a file)
+   Ask me:
+   "Paste your BloFin API Key, Secret Key, and Passphrase here in chat.
+    Also paste your OpenRouter API key (sk-or-...).
+    If you prefer, give the full path to a file on disk instead."
    Then:
-   - Read that file (or help me copy keys into the repo's credentials/blofin.txt)
-   - BloFin needs: API Key, Secret Key, Passphrase
-   - LLM needs: OPENROUTER_API_KEY (sk-or-...) in .env (copy .env.example → .env)
-   - NEVER commit secrets to git, NEVER paste keys in public chats if avoidable
+   - If I paste in chat: write BloFin keys to credentials/blofin.txt and OpenRouter to .env
+   - If I give a file path: read it and copy into credentials/blofin.txt and .env
+   - NEVER commit secrets to git or push to GitHub
+   - Private agent chat is OK for keys during setup — do not echo keys back unnecessarily
 
 B) BLOFIN + VPN / LOCATION
    Ask me: "What country are you physically in?"
@@ -99,10 +102,10 @@ STEP 4 — STOP AND HAND OFF (mandatory — do not skip)
 RULES FOR YOU (the agent)
 
 - Read ReadMe.tx end-to-end before improvising.
-- Ask for credential FILE LOCATION first — then read/copy into credentials/blofin.txt and .env locally.
+- Ask for credentials in chat (paste keys) OR file path — write to credentials/blofin.txt and .env locally.
 - Verify end-to-end (Step 3), then STOP (Step 4) — user starts via desktop only after that.
 - Do not push API keys to GitHub.
 - Confirm VPN exit country if I'm in a restricted region.
 - If trader won't start: check data\logs\trader.err
 
-Go. Start by asking me where my API credentials live on my computer.
+Go. Start by asking me to paste my BloFin and OpenRouter keys in chat (or give a file path if I prefer).

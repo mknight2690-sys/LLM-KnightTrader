@@ -4,9 +4,11 @@
 
 Before running anything, you **must ask the user** for:
 
-1. **BloFin API credentials** (API Key, Secret Key, Passphrase) → `credentials/blofin.txt` (never commit)
-2. **LLM API key** (at least `OPENROUTER_API_KEY`) → `.env` (never commit)
+1. **BloFin API credentials** (API Key, Secret Key, Passphrase) — user may **paste in chat** or give a file path → you write `credentials/blofin.txt` (never commit)
+2. **LLM API key** (at least `OPENROUTER_API_KEY`) — user may **paste in chat** or give a file path → you write `.env` (never commit)
 3. **Country of residence** and, if they use **ProtonVPN**, which **exit country** is connected — must **not** be a [BloFin-restricted jurisdiction](https://blofin.com/en/support/Terms/7296238795279-TERMS-OF-USE)
+
+Private 1:1 agent chat is fine for keys during setup. Never commit secrets or post them in public forums.
 
 ProtonVPN Free: use **Netherlands, Switzerland, Poland, Romania, Norway, or Japan** for BloFin.  
 Do **not** use **US, Canada, Singapore, or Mexico** as VPN exit for BloFin.

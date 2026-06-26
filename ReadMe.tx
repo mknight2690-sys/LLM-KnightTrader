@@ -38,7 +38,7 @@ the end of setup:
   Daily operation is ONLY via those desktop shortcuts — not background services,
   not python -m trader.agent, not scheduled tasks, not monitor agents.
 
-  Ask user where credentials live on disk (full path) before setup — see below.
+  Ask user for credentials IN CHAT or on disk — see "ASK THE USER" below.
 
 ================================================================================
 
@@ -54,23 +54,28 @@ Default target equity: $1,000,000 (game mode, micro account friendly)
 ================================================================================
 You MUST NOT assume credentials exist. Before install/start, ask the human:
 
+You MUST NOT assume credentials exist. Before install/start, ask the human.
+They may paste keys directly in this chat (preferred for setup) OR give a file path.
+
   A) BLOFIN API CREDENTIALS (required for live trading)
-     Ask first: "Where are your API credentials on this computer? (full path)"
-     Then read that file or copy into credentials/blofin.txt locally.
-     - API Key
-     - Secret Key
-     - Passphrase
-     Guide them to create credentials/blofin.txt locally (NEVER commit, NEVER
-     paste secrets into git or public chat). Format:
+     Ask: "Paste your BloFin API Key, Secret Key, and Passphrase here in chat
+     (private session), OR tell me the full path to a file that has them."
+     If pasted in chat: write them to credentials/blofin.txt locally (gitignored).
+     If file path given: read that file and copy into credentials/blofin.txt.
+     NEVER commit credentials/blofin.txt or push keys to GitHub.
+     Format for blofin.txt:
        API Key: ...
        Secret Key: ...
        Passphrase: ...
      BloFin API keys are created at: https://blofin.com (Account → API)
 
   B) LLM API KEY (required — at least one)
-     - OPENROUTER_API_KEY (recommended; free models supported)
-     - Optional: GROQ_API_KEY, GEMINI_API_KEY / GOOGLE_API_KEY
-     Guide them to .env in project root (gitignored).
+     Ask: "Paste your OpenRouter API key here (sk-or-...), OR another LLM key
+     if you don't use OpenRouter."
+     If pasted in chat: write OPENROUTER_API_KEY=... to .env (gitignored).
+     Recommended: OPENROUTER_API_KEY (free models supported)
+     Optional fallbacks: GROQ_API_KEY, GEMINI_API_KEY / GOOGLE_API_KEY
+     NEVER commit .env or push keys to GitHub.
 
   C) LOCATION + VPN (required if user is in a restricted region)
      Ask: "What country are you physically in?"
@@ -361,8 +366,8 @@ Share prompt for new users/agents: SHARE_PROMPT.txt (copy-paste to any AI)
 ================================================================================
 
 [ ] Read this file (ReadMe.tx)
-[ ] ASK USER: BloFin API Key + Secret + Passphrase → credentials/blofin.txt
-[ ] ASK USER: LLM key(s) → .env
+[ ] ASK USER: BloFin API Key + Secret + Passphrase (paste in chat OR file path) → credentials/blofin.txt
+[ ] ASK USER: OpenRouter / LLM key (paste in chat OR file path) → .env
 [ ] ASK USER: home country + ProtonVPN exit country (if VPN needed)
 [ ] Confirm VPN exit is NOT a BloFin-restricted country (see section above)
 [ ] Python 3.12+ and pip install -r requirements.txt
