@@ -847,6 +847,179 @@ def check_account_early_and_repair(
         log_warn(label, "Early account check import failed", str(exc)[:200])
         return False
 
+
+def _trade_failed_fingerprint(trade: dict[str, Any]) -> str:
+    action = str(trade.get("action") or "")
+    inst = str(trade.get("instId") or "")
+    ts = float(trade.get("ts") or 0)
+    return f"trade:{action}:{inst}:{int(ts)}"
+
+
+def _trade_error_to_incident(trade: dict[str, Any]) -> dict[str, Any] | None:
+    action = str(trade.get("action") or "")
+    ok = trade.get("ok")
+    resp = trade.get("response") or {}
+    reason = str(trade.get("reason") or trade.get("error") or "")
+
+    # Determine failure.
+    failed = (
+        ok is False
+        or "failed" in action.lower()
+        or str(action).lower() in ("open_failed", "close_failed", "open_rejected")
+    )
+    # Some trades may have ok missing but response code indicates failure.
+    if not failed and resp:
+        code = resp.get("code")
+        if code is not None and str(code) not in ("0", "0.0", ""):
+            failed = True
+        if resp.get("error") or resp.get("msg") or resp.get("title"):
+            # If response has an obvious error field, treat as failure.
+            msg_blob = str(resp.get("error") or resp.get("msg") or resp.get("title") or "")
+            if msg_blob and ("error" in msg_blob.lower() or "reject" in msg_blob.lower()):
+                failed = True
+
+    if not failed:
+        return None
+
+    phase = "open_failed"
+    a = action.lower()
+    if "close" in a:
+        phase = "close_failed"
+    elif "tpsl" in a or "tp/sl" in a:
+        phase = "tpsl_failed"
+    elif "open" in a:
+        phase = "open_failed"
+
+    inst_id = trade.get("instId")
+    side = trade.get("side")
+    contracts = trade.get("contracts") or trade.get("size_contracts") or trade.get("size")
+    price = resp.get("markPrice") or resp.get("mark") or trade.get("price") or trade.get("mark")
+    tp_pct = trade.get("tp_pct") or resp.get("tp_pct") if isinstance(resp, dict) else None
+    sl_pct = trade.get("sl_pct") or resp.get("sl_pct") if isinstance(resp, dict) else None
+
+    err_blob = reason or str(resp.get("msg") or resp.get("error") or resp.get("title") or "")
+    if not err_blob:
+        err_blob = f"trade failed: action={action}"
+
+    return {
+        "phase": phase,
+        "title": "dashboard recent trade failed",
+        "error": err_blob[:900],
+        "instId": inst_id,
+        "side": side,
+        "contracts": contracts,
+        "price": price,
+        "tp_pct": tp_pct if tp_pct is not None else 2.0,
+        "sl_pct": sl_pct if sl_pct is not None else 1.0,
+        "leverage": trade.get("leverage") or 3,
+    }
+
+
+def check_dashboard_sections_and_repair(
+    client: Any,
+    llm: LLMWrapper,
+    state: dict[str, Any],
+    *,
+    label: str,
+    cooldown_sec: float = 180.0,
+) -> bool:
+    """
+    Monitor dashboard sections (activity log already handled elsewhere) by scanning:
+    - Recent Trades: state['trades'] for failed/open/close/tpsl problems
+    - Research & Strategy: state['research_notes'] for explicit error markers
+    - Last LLM Decision: state['last_decision'] for fallback/invalid markers
+
+    If found, run full repair triage for the incident.
+    """
+    try:
+        from trader.state import load_state
+    except Exception as exc:
+        log_warn(label, "Dashboard state import failed", str(exc)[:200])
+        return False
+
+    try:
+        s = load_state()
+    except Exception as exc:
+        log_warn(label, "Dashboard state load failed", str(exc)[:200])
+        return False
+
+    seen = state.setdefault("dashboard_incident_seen", {})
+    if not isinstance(seen, dict):
+        seen = {}
+        state["dashboard_incident_seen"] = seen
+
+    def _cooldown(fp: str) -> bool:
+        last = float(seen.get(fp) or 0)
+        return fp and time.time() - last < cooldown_sec
+
+    incidents: list[dict[str, Any]] = []
+
+    # Recent trades
+    trades = list(s.get("trades") or [])
+    for tr in trades[-25:]:
+        if not isinstance(tr, dict):
+            continue
+        incident = _trade_error_to_incident(tr)
+        if not incident:
+            continue
+        fp = _trade_failed_fingerprint(tr)
+        if _cooldown(fp):
+            continue
+        seen[fp] = time.time()
+        incidents.append(incident)
+
+    # Research notes: if agent explicitly recorded an error/failure note.
+    research = list(s.get("research_notes") or [])
+    for n in research[-30:]:
+        if not isinstance(n, dict):
+            continue
+        note = str(n.get("note") or "")
+        if any(k in note.lower() for k in ("error", "fallback", "unsafe", "failed", "rejected")):
+            fp = f"research:{int(float(n.get('ts') or time.time()))}:{note[:40]}"
+            if _cooldown(fp):
+                continue
+            seen[fp] = time.time()
+            incidents.append(
+                {
+                    "phase": "proactive_anomaly",
+                    "title": "dashboard research flagged failure",
+                    "error": note[:900],
+                }
+            )
+            break
+
+    # Last decision: invalid response / fallback after error
+    decision = s.get("last_decision")
+    if isinstance(decision, dict):
+        reasoning = str(decision.get("reasoning") or "")
+        blob = json.dumps(decision, default=str)[:900]
+        if any(k in reasoning.lower() for k in ("fallback", "invalid", "unsafe", "rate limited", "error")):
+            fp = f"decision:{int(time.time())}:{blob[:40]}"
+            if not _cooldown(fp):
+                seen[fp] = time.time()
+                incidents.append(
+                    {
+                        "phase": "proactive_anomaly",
+                        "title": "dashboard last decision indicates failure",
+                        "error": reasoning[:900] or blob,
+                    }
+                )
+
+    if not incidents:
+        return False
+
+    # Run one incident per cycle per agent to avoid stacking multiple LLM repairs.
+    incident = incidents[0]
+    try:
+        result = triage_with_repair_engine(client, llm, state, incident, label=label)
+        if result and (result.recovered or result.actions_taken):
+            return True
+    except Exception as exc:
+        log_warn(label, "Dashboard section repair failed", str(exc)[:200])
+        return False
+
+    return False
+
     # Cooldown per-process to avoid hammering API/cache operations.
     meta = state.setdefault("_early_account_meta", {})
     last_ts = float(meta.get("last_ts") or 0)

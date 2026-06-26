@@ -30,6 +30,7 @@ from trader.repair_agent import (
     log_warn,
     maybe_autorepair_global,
     check_account_early_and_repair,
+    check_dashboard_sections_and_repair,
     run_novel_investigation,
     triage_with_repair_engine,
 )
@@ -156,6 +157,17 @@ def run_cycle(client, llm, state: dict) -> None:
         )
     except Exception as exc:
         log_warn(LABEL, "Early account check crashed", str(exc)[:200])
+
+    # Dashboard sections scanner: failed trades / invalid last decisions.
+    try:
+        check_dashboard_sections_and_repair(
+            client,
+            llm,
+            state,
+            label=LABEL,
+        )
+    except Exception as exc:
+        log_warn(LABEL, "Dashboard section scan crashed", str(exc)[:200])
 
     evidence = _gather_evidence()
     fp = _fingerprint(evidence)
