@@ -420,3 +420,7 @@ def restart_bots() -> dict[str, Any]:
         }
     finally:
         _release_restart_lock()
+
+
+# Alias for dashboard.server import compatibility
+restart_traders = restart_bots

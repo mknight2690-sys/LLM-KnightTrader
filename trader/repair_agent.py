@@ -1,8 +1,11 @@
 """Shared base for LLM-powered repair agents.
 
-Each repair agent runs as a persistent detached process launched by the stack launcher.
-They share: LLM access, activity log monitoring, stack health checks, process management,
-and the ability to edit source code to fix bugs.
+Each agent runs as a persistent detached process launched by the stack launcher.
+They have full access to: activity log, all log files, source code (read/edit),
+process management, network checks, and the Blofin client.
+
+They operate like automotive technicians — they don't need to know the codebase
+in advance. They diagnose from evidence (logs, errors, symptoms) and fix what's broken.
 """
 
 from __future__ import annotations
@@ -20,9 +23,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from activity_log import get_recent, log_event
-from config import DATA_DIR, PID_DIR
+from config import DATA_DIR, PID_DIR, PROJECT_ROOT
 from llm.wrapper import LLMWrapper
-from trader.stack_control import stack_status
 
 AGENT_ERR_LOG = DATA_DIR / "logs" / "repair_agent.err"
 
@@ -43,7 +45,7 @@ def log_warn(agent: str, title: str, detail: str = "") -> None:
     log_event("warning", f"[{agent}] {title}", detail[:400] or "")
 
 
-def _acquire_agent_lock(name: str) -> tuple[bool, Path]:
+def _acquire_agent_lock(name: str) -> bool:
     lock = PID_DIR / f"repair_agent_{name}.lock"
     PID_DIR.mkdir(parents=True, exist_ok=True)
     my_pid = os.getpid()
@@ -51,12 +53,12 @@ def _acquire_agent_lock(name: str) -> tuple[bool, Path]:
         try:
             old_pid = int(lock.read_text(encoding="utf-8").strip())
             if old_pid > 0 and _pid_alive(old_pid):
-                return False, lock
+                return False
             lock.unlink(missing_ok=True)
         except (ValueError, OSError):
             pass
     lock.write_text(str(my_pid), encoding="utf-8")
-    return True, lock
+    return True
 
 
 def _pid_alive(pid: int) -> bool:
@@ -104,8 +106,7 @@ def agent_main(
     interval_sec: float = 30.0,
 ) -> None:
     _ensure_log_dir()
-    acquired, lock_path = _acquire_agent_lock(name)
-    if not acquired:
+    if not _acquire_agent_lock(name):
         print(f"{label}: another instance already running — exiting", flush=True)
         sys.exit(1)
 
@@ -114,20 +115,18 @@ def agent_main(
 
     setup_sigterm(_stop)
 
-    client = None
     from blofin.client import BlofinClient
     client = BlofinClient()
     log(name, "Agent started", f"interval={interval_sec}s")
 
     llm = LLMWrapper()
     state: dict[str, Any] = {
-        "last_activity_ts": 0.0,
-        "seen_errors": [],
         "last_action_ts": 0.0,
         "consecutive_errors": 0,
         "repairs_attempted": 0,
         "repairs_succeeded": 0,
         "startup_ts": time.time(),
+        "seen_fingerprints": [],
     }
 
     try:
@@ -141,7 +140,7 @@ def agent_main(
                 state["consecutive_errors"] += 1
                 log_err(name, "Cycle error", str(exc)[:300])
                 if state["consecutive_errors"] > 20:
-                    log_err(name, "Too many errors, restarting loop", "will retry after long sleep")
+                    log_err(name, "Too many errors, will retry after long sleep", "")
                     time.sleep(120)
                     state["consecutive_errors"] = 0
             time.sleep(interval_sec)
@@ -152,7 +151,7 @@ def agent_main(
         log(name, "Agent stopped", f"attempted={state['repairs_attempted']} succeeded={state['repairs_succeeded']}")
 
 
-def llm_ask(agent: str, llm: LLMWrapper, system_prompt: str, user_message: str, *, max_tokens: int = 800) -> str:
+def llm_ask(agent: str, llm: LLMWrapper, system_prompt: str, user_message: str, *, max_tokens: int = 1500) -> str:
     try:
         resp = llm.chat(
             messages=[{"role": "user", "content": user_message}],
@@ -181,14 +180,66 @@ def write_file_safe(path: Path, content: str) -> bool:
         return False
 
 
-def kill_agent_process(exclude_pid: int | None = None) -> int:
-    exclude = exclude_pid or os.getpid()
+def run_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout + p.stderr
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return -1, str(exc)
+
+
+def get_stack_status() -> dict[str, Any]:
+    from trader.stack_control import stack_status
+    return stack_status()
+
+
+def get_recent_errors(limit: int = 50) -> list[dict]:
+    noise = (
+        "repair llm", "repair triage", "repair complete", "repair recovered",
+        "repair skipped llm", "stream guardian", "proactive repair",
+        "watchdog", "duplicate trader", "[watchdog]", "[Repair",
+    )
+    out = []
+    for event in reversed(get_recent(limit)):
+        if event.get("type") != "error":
+            continue
+        blob = f"{event.get('title','')} {event.get('detail','')}".lower()
+        if any(m in blob for m in noise):
+            continue
+        out.append(event)
+    out.reverse()
+    return out
+
+
+def get_log_tail(filename: str, lines: int = 80) -> str:
+    log_path = DATA_DIR / "logs" / filename
+    if not log_path.is_file():
+        return ""
+    try:
+        all_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(all_lines[-lines:])
+    except OSError:
+        return ""
+
+
+def list_source_files() -> list[str]:
+    """List all Python source files in the project for the LLM to know about."""
+    files = []
+    for path in PROJECT_ROOT.rglob("*.py"):
+        if "__pycache__" in str(path) or ".venv" in str(path):
+            continue
+        rel = path.relative_to(PROJECT_ROOT)
+        files.append(str(rel))
+    return sorted(files)
+
+
+def kill_agent_process() -> int:
     killed = 0
     try:
         if sys.platform == "win32":
             cmd_raw = subprocess.check_output(
                 ["powershell", "-NoProfile", "-Command",
-                 "Get-CimInstance Win32_Process -Filter \"(Name='python.exe' OR Name='pythonw.exe') AND CommandLine LIKE '%repair_agent%'\" | "
+                 "Get-CimInstance Win32_Process -Filter \"(Name='python.exe' OR Name='pythonw.exe') AND CommandLine LIKE '%repair_agents%'\" | "
                  "Select-Object ProcessId | ConvertTo-Json -Compress"],
                 stderr=subprocess.DEVNULL, text=True, timeout=8,
             ).strip()
@@ -198,7 +249,7 @@ def kill_agent_process(exclude_pid: int | None = None) -> int:
                     rows = [rows]
                 for row in rows:
                     pid = int(row.get("ProcessId", 0))
-                    if pid and pid != exclude:
+                    if pid and pid != os.getpid():
                         subprocess.Popen(
                             ["taskkill", "/PID", str(pid), "/F"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -206,15 +257,13 @@ def kill_agent_process(exclude_pid: int | None = None) -> int:
                         killed += 1
         else:
             out = subprocess.check_output(
-                ["pgrep", "-f", "repair_agent"], text=True, timeout=8
+                ["pgrep", "-f", "repair_agents"], text=True, timeout=8
             )
             for line in out.splitlines():
                 pid = int(line.strip())
-                if pid and pid != exclude:
+                if pid and pid != os.getpid():
                     os.kill(pid, 15)
                     killed += 1
     except (subprocess.SubprocessError, FileNotFoundError, ValueError, OSError):
         pass
     return killed
-
-
