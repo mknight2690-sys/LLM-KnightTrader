@@ -1,4 +1,4 @@
-"""Bot stack control — status and restart without killing the dashboard."""
+"""Bot stack control ΓÇö status and restart without killing the dashboard."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _matches_bot(cmd: str) -> bool:
 
 def _enumerate_python_processes() -> list[dict[str, Any]]:
     if sys.platform == "win32":
-        # Use targeted WMI query — avoid Get-Process (hangs on zombies).
+        # Use targeted WMI query ΓÇö avoid Get-Process (hangs on zombies).
         # Query ProcessId and CommandLine for module identification.
         try:
             proc_raw = subprocess.check_output(
@@ -134,7 +134,7 @@ def _kill_pid(pid: int) -> bool:
     try:
         if sys.platform == "win32":
             import ctypes
-            # Use ShellExecuteW to fire-and-forget taskkill — no handle inheritance,
+            # Use ShellExecuteW to fire-and-forget taskkill ΓÇö no handle inheritance,
             # no subprocess.Popen, no lingering handles that can affect later Popen.
             ctypes.windll.shell32.ShellExecuteW(
                 None, "open", "taskkill", f"/F /PID {pid}", None, 0
@@ -204,7 +204,7 @@ def kill_entire_stack(exclude_pids: set[int] | None = None) -> list[int]:
         if _kill_pid(pid):
             killed.append(pid)
 
-    # Note: PID files are NOT cleared here — _clear_stack_pid_files() can hang
+    # Note: PID files are NOT cleared here ΓÇö _clear_stack_pid_files() can hang
     # on Windows when a zombie process holds a handle to the file. They will
     # be overwritten on the next start.
     return killed
@@ -398,7 +398,7 @@ def restart_bots() -> dict[str, Any]:
     if not _is_port_free(DASHBOARD_PORT):
         return {
             "killed_pids": [],
-            "trader": {"ok": False, "error": "dashboard not running — use launcher start"},
+            "trader": {"ok": False, "error": "dashboard not running ΓÇö use launcher start"},
             "stack": stack_status(),
         }
 
@@ -424,141 +424,3 @@ def restart_bots() -> dict[str, Any]:
 
 # Alias for dashboard.server import compatibility
 restart_traders = restart_bots
-
-
-# --- Functions required by stack_operator.py, stack_watchdog.py, repair.py, etc. ---
-
-def _subprocess_kwargs() -> dict[str, Any]:
-    """Kwargs for launching detached subprocesses."""
-    kwargs: dict[str, Any] = {"cwd": str(PROJECT_ROOT)}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        kwargs["stdout"] = subprocess.DEVNULL
-        kwargs["stderr"] = subprocess.DEVNULL
-    return kwargs
-
-
-def ensure_desktop_shortcuts() -> dict[str, Any]:
-    """Create desktop shortcuts if missing. Returns status dict."""
-    desktop = Path.home() / "Desktop"
-    start_lnk = desktop / "Start LLM KnightTrader.lnk"
-    stop_lnk = desktop / "Stop LLM KnightTrader.lnk"
-    ps1 = PROJECT_ROOT / "scripts" / "create_desktop_shortcuts.ps1"
-    if not ps1.is_file():
-        return {"created": False, "reason": "script missing", "paths": {}}
-    try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
-            cwd=str(PROJECT_ROOT), timeout=15, capture_output=True,
-        )
-    except (subprocess.SubprocessError, OSError):
-        pass
-    return {
-        "created": start_lnk.is_file() and stop_lnk.is_file(),
-        "paths": {"start": str(start_lnk), "stop": str(stop_lnk)},
-    }
-
-
-def dedupe_preferred_trader() -> int | None:
-    """Kill all trader processes except the one in the PID file. Returns kept PID."""
-    pids = _trader_pids()
-    if len(pids) <= 1:
-        return pids[0] if pids else None
-    keep_pid = None
-    if TRADER_PID_FILE.is_file():
-        try:
-            keep_pid = int(TRADER_PID_FILE.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            keep_pid = pids[0]
-    else:
-        keep_pid = pids[0]
-    for pid in pids:
-        if pid != keep_pid:
-            _kill_pid(pid)
-    return keep_pid
-
-
-def dedupe_preferred_dashboard() -> int | None:
-    """Kill all dashboard processes except one. Returns kept PID."""
-    pids = _module_pids("dashboard.server")
-    if len(pids) <= 1:
-        return pids[0] if pids else None
-    keep_pid = pids[0]
-    for pid in pids[1:]:
-        _kill_pid(pid)
-    return keep_pid
-
-
-def _kill_monitor_and_watchers() -> list[int]:
-    """Kill monitor and watcher processes."""
-    killed = []
-    for module in ("monitor.agent", "babysit_12m", "babysit_perpetual", "watch_and_fix", "watch_logs"):
-        for pid in _pids_for_module(module):
-            if _kill_pid(pid):
-                killed.append(pid)
-    return killed
-
-
-def ensure_single_stack(*, require_trader: bool = True, settle_sec: float = 5.0) -> dict[str, Any]:
-    """Ensure exactly one dashboard and optionally one trader are running."""
-    killed = _kill_monitor_and_watchers()
-    dedupe_preferred_dashboard()
-    dedupe_preferred_trader()
-    if require_trader:
-        status = stack_status()
-        if status.get("trader", {}).get("status") == "offline":
-            start_single_trader()
-    if settle_sec > 0:
-        time.sleep(min(settle_sec, 2.0))
-    return {"ok": True, "killed": killed}
-
-
-def stop_all_stack_processes() -> list[int]:
-    """Kill all stack processes including dashboard."""
-    return kill_entire_stack()
-
-
-def spawn_full_stack_restart() -> dict[str, Any]:
-    """Spawn a full stack restart in a detached process."""
-    import multiprocessing
-    from trader.stack_operator import cold_start_stack
-    ctx = multiprocessing.get_context("spawn")
-    p = ctx.Process(target=cold_start_stack, kwargs={"open_browser": False})
-    p.start()
-    return {"ok": True, "spawned_pid": p.pid}
-
-
-def _stack_env() -> dict[str, Any]:
-    """Full environment dict for spawning subprocesses (used as env= parameter)."""
-    env = dict(os.environ)
-    env["PROJECT_ROOT"] = str(PROJECT_ROOT)
-    env["PYTHON"] = _trader_python()
-    env["PID_DIR"] = str(PID_DIR)
-    return env
-
-
-# --- Stack starting state tracking ---
-_STACK_STARTING = False
-_STACK_STARTING_TS = 0.0
-_BOOT_SETTLE_SEC = 3.0
-
-
-def mark_stack_starting() -> None:
-    global _STACK_STARTING, _STACK_STARTING_TS
-    _STACK_STARTING = True
-    _STACK_STARTING_TS = time.time()
-
-
-def clear_stack_starting() -> None:
-    global _STACK_STARTING, _STACK_STARTING_TS
-    _STACK_STARTING = False
-    _STACK_STARTING_TS = 0.0
-
-
-def stack_starting() -> bool:
-    if not _STACK_STARTING:
-        return False
-    if time.time() - _STACK_STARTING_TS > 30.0:
-        _STACK_STARTING = False
-        return False
-    return True

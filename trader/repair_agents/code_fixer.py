@@ -1,14 +1,7 @@
 """Repair Agent 2 — Code Fixer.
 
-Monitors error logs and activity log for bugs, crashes, and code-level issues.
-When it finds a problem it can diagnose, it reads the relevant source files,
-identifies the bug, and applies a code fix. Then restarts affected modules.
-
-Focus areas:
-- Python tracebacks in error logs
-- LLM response parsing failures
-- BloFin API error codes that indicate code bugs
-- Logic errors flagged by the trader LLM itself
+A master software engineer that diagnoses code bugs from tracebacks and error logs.
+Reads source, understands context, applies surgical fixes, restarts affected modules.
 """
 
 from __future__ import annotations
@@ -24,85 +17,114 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from activity_log import get_recent
-from config import PROJECT_ROOT
+from config import DATA_DIR, PROJECT_ROOT
 from trader.repair_agent import (
     agent_main,
+    get_log_tail,
+    get_recent_errors,
+    list_source_files,
     log,
     log_err,
     log_warn,
     llm_ask,
     read_file_safe,
     write_file_safe,
+    run_cmd,
 )
 
 AGENT_NAME = "code_fixer"
 LABEL = "Repair[CodeFixer]"
-LOOP_SEC = 45.0
+LOOP_SEC = 30.0
 
-CODEFIXER_SYSTEM = """You are the LLM KnightTrader **Code Fixer** — an autonomous software engineer.
+SYSTEM = (
+    "You are the LLM KnightTrader **Code Fixer** — a master software engineer.\n\n"
+    "You diagnose and fix ANY code bug from tracebacks and error logs.\n"
+    "You read source files to understand the code, then apply precise fixes.\n\n"
+    "YOUR MINDSET:\n"
+    "1. SYMPTOM: Read the traceback/error\n"
+    "2. DIAGNOSIS: Read the relevant source file\n"
+    "3. ROOT CAUSE: Find the exact broken line\n"
+    "4. FIX: Output a precise search-and-replace patch\n\n"
+    "YOUR TOOLS:\n"
+    "- read_file_safe(path) — read any source file\n"
+    "- write_file_safe(path, content) — write modified content\n"
+    "- list_source_files() — see all .py files\n"
+    "- get_recent_errors() — get activity log errors\n"
+    "- get_log_tail(filename) — read recent log lines\n"
+    "- run_cmd(cmd_list) — run shell command\n\n"
+    "RESPOND ONLY with valid JSON (no markdown):\n"
+    "{\n"
+    '  "diagnosis": "What the bug is (max 300 chars)",\n'
+    '  "file": "relative/path/to/file.py",\n'
+    '  "search_text": "EXACT code to find (match whitespace exactly)",\n'
+    '  "replace_text": "EXACT replacement code",\n'
+    '  "restart_module": "trader.agent" or null,\n'
+    '  "confidence": 0-100\n'
+    "}\n\n"
+    "If no bug: {\"diagnosis\":\"no code bugs detected\",\"confidence\":100}\n\n"
+    "RULES:\n"
+    "- search_text MUST match file content EXACTLY including indentation\n"
+    "- Max 1 fix per diagnosis, pick the most impactful\n"
+    "- Never change more than 10 lines\n"
+    "- If confidence < 60, do NOT apply the fix\n"
+    "- Always read the file first before proposing a fix\n"
+)
 
-You monitor the stack for code-level bugs: tracebacks, logic errors, API misuse, parsing failures.
-When you find a real bug, you read the source, understand the issue, and output a precise fix.
 
-You are conservative — only fix things you understand. Never rewrite large sections.
-Only fix bugs that are causing actual errors in the logs.
-
-Respond ONLY with valid JSON (no markdown):
-{
-  "bug_found": true|false,
-  "file": "relative/path/to/file.py" or null,
-  "line": 123 or null,
-  "diagnosis": "What the bug is (max 200 chars)",
-  "fix_type": "replace_line|replace_block|add_import|none",
-  "fix_content": "The replacement code (if applicable)",
-  "search_text": "The exact text to find in the file (for replace_block)",
-  "restart_module": "trader.agent" or null,
-  "confidence": 0-100,
-  "lesson": {"category": "code_fix", "text": "Durable lesson"} or null
-}
-
-If no bug found: {"bug_found":false,"diagnosis":"no code bugs detected"}
-
-RULES:
-- Only fix bugs you can see in tracebacks or error logs.
-- fix_content must be valid Python that fits the surrounding context.
-- search_text must match EXACTLY including whitespace.
-- Max 1 fix per diagnosis. If multiple bugs, pick the most impactful.
-- Never fix more than 5 lines of code at a time.
-- If confidence < 60, do not apply the fix — just report it.
-"""
-
-
-def _find_recent_tracebacks() -> list[dict]:
-    """Find events with traceback or error detail in the last N log entries."""
-    results = []
-    for event in get_recent(50):
-        if event.get("type") != "error":
-            continue
+def _find_bugs() -> list[dict]:
+    bugs = []
+    for event in get_recent_errors(50):
         detail = event.get("detail", "")
         title = event.get("title", "")
-        if "Traceback" in detail or "Error" in title or "error" in title.lower():
-            if "repair" in title.lower() or "watchdog" in title.lower():
-                continue
-            results.append(event)
-    return results[-10:]
+        if "Traceback" in detail:
+            tb = _extract_traceback(detail)
+            if tb:
+                bugs.append(tb)
+        elif "ImportError" in detail or "ModuleNotFoundError" in detail:
+            bugs.append({"type": "import_error", "title": title, "detail": detail[:400]})
+        elif "AttributeError" in detail:
+            bugs.append({"type": "attribute_error", "title": title, "detail": detail[:400]})
+        elif "TypeError" in detail:
+            bugs.append({"type": "type_error", "title": title, "detail": detail[:400]})
+        elif "NameError" in detail:
+            bugs.append({"type": "name_error", "title": title, "detail": detail[:400]})
+        elif "KeyError" in detail:
+            bugs.append({"type": "key_error", "title": title, "detail": detail[:400]})
+    return bugs[-10:]
 
 
-def _apply_fix(file_path: Path, search_text: str, fix_content: str) -> bool:
-    """Apply a search-and-replace fix to a file."""
+def _extract_traceback(detail: str) -> dict | None:
+    files = re.findall(r'File "([^"]+)", line (\d+), in (\w+)', detail)
+    error_match = re.search(r'(\w+Error[:\s].+?)(?:\n|$)', detail)
+    if not files or not error_match:
+        return None
+    project_files = [f for f in files if "llm-knighttrader" in f[0] or "trader" in f[0]]
+    if not project_files:
+        project_files = files
+    target = project_files[-1]
+    return {
+        "type": "traceback",
+        "file": target[0],
+        "line": int(target[1]),
+        "function": target[2],
+        "error": error_match.group(1).strip()[:200],
+        "full_traceback": detail[-1500:],
+    }
+
+
+def _apply_fix(file_path: Path, search_text: str, replace_text: str) -> bool:
     source = read_file_safe(file_path)
     if source is None:
         return False
     if search_text not in source:
         log_warn(LABEL, "search_text not found", f"file={file_path.name}")
         return False
-    new_source = source.replace(search_text, fix_content, 1)
+    new_source = source.replace(search_text, replace_text, 1)
     if new_source == source:
         return False
-    backup = file_path.read_text(encoding="utf-8")
-    backup_path = file_path.with_suffix(file_path.suffix + ".bak")
     try:
-        backup_path.write_text(backup, encoding="utf-8")
+        backup_path = file_path.with_suffix(file_path.suffix + f".bak_{int(time.time())}")
+        backup_path.write_text(source, encoding="utf-8")
     except OSError:
         pass
     if write_file_safe(file_path, new_source):
@@ -112,7 +134,6 @@ def _apply_fix(file_path: Path, search_text: str, fix_content: str) -> bool:
 
 
 def _restart_module(module: str) -> bool:
-    """Kill and restart a module. Returns True if restart initiated."""
     from trader.stack_control import start_single_trader
     if module == "trader.agent":
         result = start_single_trader()
@@ -121,24 +142,35 @@ def _restart_module(module: str) -> bool:
 
 
 def run_cycle(client, llm, state: dict) -> None:
-    now = time.time()
-    tracebacks = _find_recent_tracebacks()
-    if not tracebacks:
+    bugs = _find_bugs()
+    if not bugs:
         return
 
     state["repairs_attempted"] += 1
-    recent = tracebacks[-5:]
-    lines = []
-    for e in recent:
-        title = e.get("title", "")
-        detail = e.get("detail", "")[:300]
-        lines.append(f"[{title}] {detail}")
+    lines = [f"Found {len(bugs)} bug(s):\n"]
+    for i, bug in enumerate(bugs[-5:]):
+        lines.append(f"--- Bug {i+1} ---")
+        if bug["type"] == "traceback":
+            lines.append(f"File: {bug['file']} line {bug['line']} in {bug['function']}")
+            lines.append(f"Error: {bug['error']}")
+            lines.append(f"Traceback:\n{bug['full_traceback'][-600:]}")
+        else:
+            lines.append(f"Type: {bug['type']}")
+            lines.append(f"Title: {bug['title']}")
+            lines.append(f"Detail: {bug['detail']}")
+        lines.append("")
 
-    user_msg = "Recent errors/tracebacks:\n" + "\n---\n".join(lines)
+    trader_log = get_log_tail("trader.err", 30)
+    if trader_log:
+        lines.append(f"\nTrader log:\n{trader_log[-600:]}")
 
-    answer = llm_ask(AGENT_NAME, llm, CODEFIXER_SYSTEM, user_msg, max_tokens=600)
+    user_msg = "\n".join(lines)
+    if len(user_msg) > 5000:
+        user_msg = user_msg[:5000]
+
+    answer = llm_ask(AGENT_NAME, llm, SYSTEM, user_msg, max_tokens=1500)
     if not answer:
-        log_warn(LABEL, "LLM unavailable for code fix", f"{len(tracebacks)} errors pending")
+        log_warn(LABEL, "LLM unavailable", f"{len(bugs)} bugs pending")
         return
 
     try:
@@ -149,46 +181,37 @@ def run_cycle(client, llm, state: dict) -> None:
             stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
             if stripped.endswith("```"):
                 stripped = stripped[:-3]
-            plan = json.loads(stripped.strip())
-        else:
-            log_err(LABEL, "Could not parse LLM response", answer[:200])
-            return
+        plan = json.loads(stripped.strip())
 
-    if not plan.get("bug_found"):
+    if not plan.get("file") or not plan.get("search_text"):
+        log(LABEL, "Diagnosis (no auto-fix)", plan.get("diagnosis", "")[:200])
         return
 
     confidence = plan.get("confidence", 0)
-    diagnosis = plan.get("diagnosis", "")
-    file_path_str = plan.get("file")
-    fix_type = plan.get("fix_type", "none")
-
-    if confidence < 60 or fix_type == "none":
-        log(LABEL, f"Low confidence fix skipped ({confidence}%)", diagnosis)
+    if confidence < 60:
+        log(LABEL, f"Low confidence ({confidence}%)", plan.get("diagnosis", "")[:200])
         return
 
-    if file_path_str and fix_type in ("replace_line", "replace_block"):
-        file_path = PROJECT_ROOT / file_path_str
-        if not file_path.is_file():
-            log_err(LABEL, "File not found", file_path_str)
-            return
+    file_path = PROJECT_ROOT / plan["file"]
+    if not file_path.is_file():
+        log_err(LABEL, "File not found", plan["file"])
+        return
 
-        search_text = plan.get("search_text", "")
-        fix_content = plan.get("fix_content", "")
+    ok = _apply_fix(file_path, plan["search_text"], plan.get("replace_text", ""))
+    if ok:
+        state["repairs_succeeded"] += 1
+        rc, output = run_cmd([sys.executable, "-c", f"import ast; ast.parse(open('{plan['file']}', encoding='utf-8').read()); print('OK')"])
+        if rc != 0:
+            log_warn(LABEL, "Possible syntax issue", output[:200])
 
-        if search_text and fix_content:
-            ok = _apply_fix(file_path, search_text, fix_content)
-            if ok:
-                state["repairs_succeeded"] += 1
-                restart_module = plan.get("restart_module")
-                if restart_module:
-                    log(LABEL, "Restarting module after fix", restart_module)
-                    _restart_module(restart_module)
-            else:
-                log_warn(LABEL, "Fix application failed", f"file={file_path.name}")
-        else:
-            log_warn(LABEL, "Empty fix from LLM", diagnosis)
+        restart = plan.get("restart_module")
+        if restart:
+            log(LABEL, "Restarting after fix", restart)
+            _restart_module(restart)
+
+        log(LABEL, "Bug fixed", f"file={plan['file']} conf={confidence} | {plan.get('diagnosis','')[:200]}")
     else:
-        log(LABEL, "Diagnosis (no auto-fix)", f"confidence={confidence}: {diagnosis}")
+        log_warn(LABEL, "Fix failed", f"file={plan['file']}")
 
 
 if __name__ == "__main__":

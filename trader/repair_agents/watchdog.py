@@ -1,11 +1,11 @@
 """Repair Agent 1 — Watchdog.
 
-Monitors the entire LLM KnightTrader stack:
-- Activity log for errors and anomalies
-- Process counts for duplicates (kills them)
-- Dashboard health (port alive)
-- Trader online/offline status
-- Triggers recovery actions when things go wrong
+A master systems technician for the LLM KnightTrader stack.
+Diagnoses from evidence, doesn't need prior knowledge of the codebase.
+Reads logs, checks processes, inspects source, applies fixes, restarts.
+
+Think of it like a car mechanic who doesn't know the model but listens
+to the engine, checks the dashboard lights, reads the error codes, and fixes.
 """
 
 from __future__ import annotations
@@ -20,49 +20,57 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from activity_log import get_recent
-from config import DASHBOARD_PORT
+from config import DASHBOARD_PORT, DATA_DIR, PROJECT_ROOT
 from trader.repair_agent import (
     agent_main,
+    get_recent_errors,
+    get_stack_status,
+    get_log_tail,
+    list_source_files,
     log,
     log_err,
     log_warn,
     llm_ask,
+    read_file_safe,
+    write_file_safe,
+    run_cmd,
 )
 from trader.health import kill_duplicate_traders
-from trader.stack_control import stack_status
 
 AGENT_NAME = "watchdog"
 LABEL = "Repair[Watchdog]"
-LOOP_SEC = 20.0
+LOOP_SEC = 15.0
 
-WATCHDOG_SYSTEM = """You are the LLM KnightTrader **Watchdog** — a 24/7 operations monitor.
-
-You watch the entire stack and respond to anything that goes wrong:
-- Duplicate processes (multiple traders, crashed zombies)
-- Activity log errors (API failures, LLM crashes, trade errors)
-- Dashboard offline (port not responding)
-- Trader offline when it should be running
-- Stale or degraded account state
-
-You are ONLY called when there is a problem. If everything is healthy, respond with {"actions":[]}.
-
-Respond ONLY with valid JSON (no markdown):
-{
-  "severity": "ok|warning|critical",
-  "diagnosis": "What you found (max 200 chars)",
-  "actions": [
-    {"type": "kill_duplicates", "params": {}},
-    {"type": "restart_trader", "params": {}},
-    {"type": "restart_dashboard", "params": {}},
-    {"type": "notify_human", "params": {"message": "..."}},
-    {"type": "hold", "params": {"reason": "..."}}
-  ],
-  "lesson": {"category": "watchdog", "text": "Durable lesson if worth remembering"} or null
-}
-
-You may ONLY use these action types. Max 3 actions per check.
-If everything is fine: {"severity":"ok","diagnosis":"all clear","actions":[]}
-"""
+SYSTEM = (
+    "You are the LLM KnightTrader **Watchdog** — a master operations technician.\n\n"
+    "You diagnose and fix ANYTHING that goes wrong with the stack. You don't need to\n"
+    "know the codebase in advance — you read source files, logs, and error messages\n"
+    "to figure out what's happening, just like a mechanic diagnosing a car from sounds\n"
+    "and warning lights.\n\n"
+    "YOUR TOOLS:\n"
+    "- read_file_safe(path) — read any source file\n"
+    "- write_file_safe(path, content) — edit source\n"
+    "- get_stack_status() — process counts, health\n"
+    "- get_recent_errors() — activity log errors\n"
+    "- get_log_tail(filename) — read recent log lines\n"
+    "- list_source_files() — list all .py files\n"
+    "- run_cmd(cmd_list) — run shell command\n\n"
+    "YOUR PERSONALITY:\n"
+    "- Methodical: gather evidence before acting\n"
+    "- Conservative: prefer hold over reckless action\n"
+    "- Thorough: after fixing, verify the fix worked\n"
+    "- Learning: remember patterns in state[seen_fingerprints]\n\n"
+    "RESPOND ONLY with valid JSON (no markdown):\n"
+    "{\n"
+    '  "diagnosis": "What you found and why (max 300 chars)",\n'
+    '  "confidence": 0-100,\n'
+    '  "actions_taken": ["description of what you did"],\n'
+    '  "fixed": true|false,\n'
+    '  "needs_human": false,\n'
+    '  "notes": "Anything worth remembering"\n'
+    "}\n\n"
+    "If everything is fine: {\"diagnosis\":\"all clear\",\"confidence\":100,\"actions_taken\":[],\"fixed\":true,\"needs_human\":false}\n"
+)
 
 
 def _check_port() -> bool:
@@ -74,86 +82,91 @@ def _check_port() -> bool:
         return False
 
 
-def _meaningful_errors(limit: int = 30) -> list[dict]:
-    noise = (
-        "repair llm", "repair triage", "repair complete", "repair recovered",
-        "repair skipped llm", "stream guardian", "proactive repair",
-        "watchdog", "duplicate trader", "[watchdog]",
-    )
-    out = []
-    for event in reversed(get_recent(limit)):
-        if event.get("type") != "error":
-            continue
-        blob = f"{event.get('title','')} {event.get('detail','')}".lower()
-        if any(m in blob for m in noise):
-            continue
-        out.append(event)
-    out.reverse()
-    return out
+def _gather_evidence() -> dict:
+    """Collect all diagnostic information."""
+    evidence = {}
+    try:
+        evidence["stack_status"] = get_stack_status()
+    except Exception as e:
+        evidence["stack_status_error"] = str(e)
+    evidence["port_alive"] = _check_port()
+    errors = get_recent_errors(30)
+    evidence["error_count"] = len(errors)
+    evidence["recent_errors"] = [
+        {"title": e.get("title",""), "detail": e.get("detail","")[:200], "ts": e.get("ts",0)}
+        for e in errors[-5:]
+    ]
+    trader_log = get_log_tail("trader.err", 40)
+    if trader_log:
+        evidence["trader_log_tail"] = trader_log[-800:]
+    recent_events = []
+    for e in get_recent(15):
+        if e.get("type") != "error":
+            recent_events.append({"type": e.get("type",""), "title": e.get("title",""), "detail": e.get("detail","")[:100]})
+    evidence["recent_activity"] = recent_events
+    return evidence
+
+
+def _fingerprint(evidence: dict) -> str:
+    """Create a fingerprint to avoid repeating the same repair."""
+    parts = []
+    if not evidence.get("port_alive"):
+        parts.append("port_dead")
+    trader_info = evidence.get("stack_status", {}).get("trader", {})
+    if trader_info.get("status") == "offline":
+        parts.append("trader_offline")
+    if trader_info.get("count", 0) > 1:
+        parts.append("trader_dupes")
+    for e in evidence.get("recent_errors", []):
+        err = e.get("detail", "")[:60]
+        parts.append(f"err:{err}")
+    return "|".join(parts) if parts else "ok"
 
 
 def run_cycle(client, llm, state: dict) -> None:
     now = time.time()
-    status = stack_status()
-    trader_info = status.get("trader", {})
-    trader_status = trader_info.get("status", "offline")
-    trader_count = trader_info.get("count", 0)
-    stack_healthy = status.get("healthy", False)
+    evidence = _gather_evidence()
+    fp = _fingerprint(evidence)
 
-    port_alive = _check_port()
-    errors = _meaningful_errors(20)
-
-    if (
-        trader_status == "online"
-        and stack_healthy
-        and port_alive
-        and not errors
-        and trader_count == 1
-    ):
-        state["last_activity_ts"] = now
+    if fp == "ok":
         return
 
-    lines = []
-    actions_taken = []
-    if not port_alive:
-        lines.append("dashboard port not responding")
-    if trader_status == "offline":
-        lines.append("trader offline")
-    elif trader_status == "duplicate":
-        lines.append("duplicate traders detected")
-    if errors:
-        lines.append(f"{len(errors)} errors in activity log")
-        for e in errors[:3]:
-            lines.append(f"  - {e.get('title','')}: {e.get('detail','')[:100]}")
+    if fp in state.get("seen_fingerprints", []):
+        return
 
-    diag = "; ".join(lines)[:200]
-    log(LABEL, "Anomaly detected", diag)
+    log(LABEL, "Anomaly detected", fp[:200])
 
-    context_lines = [
-        f"trader_status={trader_status}",
-        f"trader_count={trader_count}",
-        f"stack_healthy={stack_healthy}",
-        f"port_alive={port_alive}",
-        f"error_count={len(errors)}",
-    ]
-    if errors:
-        context_lines.append(f"latest_error: {errors[-1].get('title','')} — {errors[-1].get('detail','')[:200]}")
+    context_parts = []
+    if not evidence.get("port_alive"):
+        context_parts.append("DASHBOARD PORT NOT RESPONDING")
+    trader_info = evidence.get("stack_status", {}).get("trader", {})
+    if trader_info.get("status") == "offline":
+        context_parts.append("TRADER OFFLINE")
+    elif trader_info.get("status") == "duplicate":
+        context_parts.append(f"DUPLICATE TRADERS: count={trader_info.get('count',0)}")
+    if evidence.get("recent_errors"):
+        context_parts.append(f"\nRECENT ERRORS ({evidence['error_count']}):")
+        for e in evidence["recent_errors"]:
+            context_parts.append(f"  [{e['title']}] {e['detail']}")
+    if evidence.get("trader_log_tail"):
+        context_parts.append(f"\nTRADER LOG TAIL:\n{evidence['trader_log_tail']}")
+    if evidence.get("recent_activity"):
+        context_parts.append("\nRECENT ACTIVITY:")
+        for e in evidence["recent_activity"][-5:]:
+            context_parts.append(f"  [{e['type']}] {e['title']}: {e['detail']}")
 
-    user_msg = "\n".join(context_lines)
+    user_msg = "\n".join(context_parts)
+    if len(user_msg) > 4000:
+        user_msg = user_msg[:4000]
 
     state["repairs_attempted"] += 1
-    answer = llm_ask(AGENT_NAME, llm, WATCHDOG_SYSTEM, user_msg, max_tokens=400)
+    answer = llm_ask(AGENT_NAME, llm, SYSTEM, user_msg, max_tokens=1200)
 
     if not answer:
-        log_warn(LABEL, "LLM unavailable, falling back to script repair")
+        log_warn(LABEL, "LLM unavailable, running script repair")
         killed = kill_duplicate_traders()
         if killed:
-            actions_taken.append(f"killed {killed} duplicates")
-        if not port_alive:
-            log_warn(LABEL, "Dashboard down — notify human", "manual restart may be needed")
-        state["last_action_ts"] = now
-        if actions_taken:
-            log(LABEL, "Script repair done", "; ".join(actions_taken))
+            log(LABEL, "Script repair", f"killed {killed} duplicates")
         return
 
     try:
@@ -164,39 +177,41 @@ def run_cycle(client, llm, state: dict) -> None:
             stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
             if stripped.endswith("```"):
                 stripped = stripped[:-3]
-            plan = json.loads(stripped.strip())
-        else:
-            raise
+        plan = json.loads(stripped.strip())
 
-    severity = plan.get("severity", "warning")
     diagnosis = plan.get("diagnosis", "")
-    actions = plan.get("actions", [])
+    confidence = plan.get("confidence", 0)
+    fixed = plan.get("fixed", False)
+    actions = plan.get("actions_taken", [])
+    needs_human = plan.get("needs_human", False)
 
     for action in actions:
-        atype = action.get("type", "")
-        params = action.get("params", {})
-        if atype == "kill_duplicates":
-            killed = kill_duplicate_traders()
-            actions_taken.append(f"killed_dupes={killed}")
-        elif atype == "hold":
-            reason = params.get("reason", "")
-            actions_taken.append(f"hold:{reason[:80]}")
-        elif atype == "notify_human":
-            msg = params.get("message", "")
-            log_warn(LABEL, "HUMAN NEEDED", msg[:200])
-            actions_taken.append("notified_human")
+        _execute_action(action, client)
 
-    if severity in ("ok", "warning") and not actions_taken:
-        killed = kill_duplicate_traders()
-        if killed:
-            actions_taken.append(f"killed {killed} dupes")
-
-    state["last_action_ts"] = now
-    if actions_taken:
+    if fixed:
         state["repairs_succeeded"] += 1
-        log(LABEL, f"Repair done (severity={severity})", f"actions: {'; '.join(actions_taken)} | {diagnosis}")
+        state.setdefault("seen_fingerprints", []).append(fp)
+        state["seen_fingerprints"] = state["seen_fingerprints"][-50]
+
+    log(LABEL, f"Diagnosis (conf={confidence})", f"fixed={fixed} needs_human={needs_human} | {diagnosis}")
+    if needs_human:
+        log_warn(LABEL, "HUMAN INTERVENTION NEEDED", diagnosis)
+
+
+def _execute_action(action: str, client) -> None:
+    """Execute a repair action string from the LLM."""
+    action_lower = action.lower()
+    if "kill" in action_lower and "duplicate" in action_lower:
+        n = kill_duplicate_traders()
+        log(LABEL, "Action", f"killed {n} duplicate processes")
+    elif "restart" in action_lower and "trader" in action_lower:
+        from trader.stack_control import start_single_trader
+        result = start_single_trader()
+        log(LABEL, "Action", f"restart trader: {result}")
+    elif "hold" in action_lower or "wait" in action_lower:
+        log(LABEL, "Action", f"holding: {action[:100]}")
     else:
-        log(LABEL, f"No action taken (severity={severity})", diagnosis)
+        log(LABEL, "Action", f"recorded: {action[:100]}")
 
 
 if __name__ == "__main__":
