@@ -101,9 +101,9 @@ def cold_start_stack(*, open_browser: bool = False) -> dict[str, Any]:
 
     from trader.health import trader_lock_owner
     from trader.stack_control import (
-        _dashboard_launch_cmd,
         _module_pids,
         _subprocess_kwargs,
+        _trader_python,
         ensure_desktop_shortcuts,
         running_process_counts,
         stack_status,
@@ -116,8 +116,10 @@ def cold_start_stack(*, open_browser: bool = False) -> dict[str, Any]:
         if not stop["ok"]:
             log_event("system", "Stack cold start", "stop incomplete — continuing anyway")
 
+        python_bin = _trader_python()
+        wrapper = PROJECT_ROOT / "scripts" / "_launch_dashboard.py"
         kwargs = _subprocess_kwargs()
-        dash = subprocess.Popen(_dashboard_launch_cmd(), **kwargs)
+        dash = subprocess.Popen([python_bin, "-u", str(wrapper)], **kwargs)
         time.sleep(2.0)
         if dash.poll() is not None:
             return {

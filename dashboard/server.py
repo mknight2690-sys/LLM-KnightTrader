@@ -30,6 +30,7 @@ from trader.baseline import parse_baseline_command, progress_summary, set_user_b
 from trader.learning import lessons_digest
 from trader.order_guard import execution_context
 from trader.stack_control import restart_traders, stack_status
+from trader.stack_operator import run_operator_cycle
 from trader.stack_watchdog import diagnose_stack, mark_dashboard_boot, run_stack_watchdog
 from blofin.account_cache import guard_account_stream
 from trader.state import append_chat, append_user_directive, load_state, reload_chat_fields, save_state
@@ -165,12 +166,14 @@ def _bootstrap_account_cache() -> None:
 
 
 async def _stack_watchdog_loop() -> None:
-    """Full-time stack operator — process reconcile + account repair + LLM escalation."""
+    """Full-time stack operator — reconcile processes + account repair + LLM escalation."""
+    # Operator cycle runs every ~15s. It handles process dedupe, trader start,
+    # monitor/watcher cleanup, and escalates to repair LLM if stuck.
     while True:
         await asyncio.sleep(15)
         try:
-            result = await asyncio.to_thread(run_stack_watchdog)
-            if result.get("repaired"):
+            result = await asyncio.to_thread(run_operator_cycle)
+            if result.get("repaired") or result.get("llm_used") or result.get("actions"):
                 from blofin.account_cache import read_account_cached
 
                 account = await asyncio.to_thread(read_account_cached)
@@ -182,7 +185,7 @@ async def _stack_watchdog_loop() -> None:
                     }
                 )
         except Exception as exc:
-            log_event("error", "Stack watchdog failed", str(exc)[:200])
+            log_event("error", "Stack operator cycle failed", str(exc)[:200])
 
 
 async def _account_stream_loop() -> None:

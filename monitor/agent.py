@@ -133,7 +133,8 @@ def _start_if_missing(module: str, pid_name: str, cp: dict[str, Any]) -> str | N
     proc = subprocess.Popen(
         [PYTHON, "-m", module],
         cwd=str(ROOT),
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        env=_stack_env(),
+        creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
     )
     _save_pid(pid_name, proc)
     _mark_started(cp, pid_name)

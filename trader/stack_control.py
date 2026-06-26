@@ -54,27 +54,25 @@ def _trader_python() -> str:
     return sys.executable
 
 
-def _dashboard_launch_cmd() -> list[str]:
-    """Launch dashboard as one process (Windows `-m` can double-spawn)."""
-    python_bin = _trader_python()
-    return [python_bin, "-c", "from dashboard.server import main; main()"]
-
-
-def _trader_launch_cmd() -> list[str]:
-    """Launch trader as one process (Windows `-m` can double-spawn)."""
-    python_bin = _trader_python()
-    return [python_bin, "-c", "from trader.agent import main; main()"]
 
 
 def _cmdline_has_module(cmd: str, module: str) -> bool:
     if f"-m {module}" in cmd:
         return True
     if module == "trader.agent":
-        return _is_trader_process_cmd(cmd)
+        if _is_trader_process_cmd(cmd):
+            return True
+        if "_launch_trader.py" in cmd:
+            return True
+        return False
     if module == "dashboard.server":
-        return "dashboard.server" in cmd and (
-            "-m dashboard.server" in cmd or "from dashboard.server" in cmd
-        )
+        if "-m dashboard.server" in cmd:
+            return True
+        if "_launch_dashboard.py" in cmd:
+            return True
+        if "from dashboard.server" in cmd:
+            return True
+        return False
     return False
 
 
@@ -172,8 +170,6 @@ def _subprocess_kwargs(*, stderr: Any = subprocess.DEVNULL) -> dict[str, Any]:
         "stderr": stderr,
         "env": _stack_env(),
     }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     return kwargs
 
 
@@ -523,8 +519,10 @@ def start_single_trader() -> dict[str, Any]:
     err_log.write(f"\n--- trader start {time.strftime('%Y-%m-%d %H:%M:%S')} pid-pending ---\n")
     err_log.flush()
 
+    wrapper = PROJECT_ROOT / "scripts" / "_launch_trader.py"
     kwargs = _subprocess_kwargs(stderr=err_log)
-    proc = subprocess.Popen(_trader_launch_cmd(), **kwargs)
+    cmd = [python_bin, "-u", str(wrapper)]
+    proc = subprocess.Popen(cmd, **kwargs)
     PID_DIR.mkdir(parents=True, exist_ok=True)
     TRADER_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
 
@@ -686,11 +684,6 @@ def spawn_full_stack_restart() -> dict[str, Any]:
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-    else:
-        kwargs["start_new_session"] = True
-
     try:
         proc = subprocess.Popen([python_bin, str(script), "start"], **kwargs)
     except OSError as exc:

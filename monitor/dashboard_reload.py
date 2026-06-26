@@ -104,11 +104,14 @@ def _kill_dashboard() -> int:
 
 
 def _spawn_dashboard() -> subprocess.Popen:
+    from trader.stack_control import _stack_env
+
     PID_DIR.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen(
         [PYTHON, "-m", "dashboard.server"],
         cwd=str(ROOT),
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        env=_stack_env(),
+        creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
     )
     (PID_DIR / "dashboard.pid").write_text(str(proc.pid), encoding="utf-8")
     return proc
