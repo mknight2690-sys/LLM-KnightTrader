@@ -25,6 +25,7 @@ BOT_MODULES = (
 )
 
 MONITOR_PID_FILE = PID_DIR / "monitor.pid"
+DASHBOARD_PID_FILE = PID_DIR / "dashboard.pid"
 DEFAULT_TRADER_PYTHON = Path(
     os.environ.get(
         "KNIGHTTRADER_PYTHON",
@@ -168,11 +169,62 @@ def _kill_pid(pid: int) -> bool:
 
 def _clear_bot_pid_files() -> None:
     PID_DIR.mkdir(parents=True, exist_ok=True)
-    for path in (TRADER_PID_FILE, MONITOR_PID_FILE):
+    for path in (TRADER_PID_FILE, MONITOR_PID_FILE, DASHBOARD_PID_FILE):
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _clear_stack_pid_files() -> None:
+    _clear_bot_pid_files()
+
+
+def running_process_counts() -> dict[str, int]:
+    """Live python process counts for the full KnightTrader stack."""
+    watcher_modules = ("babysit_12m", "babysit_perpetual", "watch_and_fix", "watch_logs")
+    watchers = 0
+    for module in watcher_modules:
+        watchers += len(_pids_for_module(module))
+    return {
+        "dashboard": len(_module_pids("dashboard.server")),
+        "trader": len(_trader_pids()),
+        "monitor": len(_pids_for_module("monitor.agent")),
+        "watchers": watchers,
+    }
+
+
+def is_entire_stack_stopped() -> bool:
+    counts = running_process_counts()
+    return all(v == 0 for v in counts.values())
+
+
+def kill_entire_stack(exclude_pids: set[int] | None = None) -> list[int]:
+    """Kill dashboard, trader, monitor, and watcher processes (full desktop stack)."""
+    exclude = set(exclude_pids or ())
+    exclude.add(os.getpid())
+    killed: list[int] = list(kill_all_bots(exclude_pids=exclude))
+
+    for pid in _module_pids("dashboard.server"):
+        if pid in exclude or pid in killed:
+            continue
+        if _kill_pid(pid):
+            killed.append(pid)
+
+    for row in _enumerate_python_processes():
+        pid = row["pid"]
+        if pid in exclude or pid in killed:
+            continue
+        cmd = row["cmd"]
+        if "dashboard.server" not in cmd:
+            continue
+        root = str(PROJECT_ROOT).lower()
+        if f"-m dashboard.server" in cmd or root in cmd.lower() or "hermes-llm-trader" in cmd.lower():
+            if _kill_pid(pid):
+                killed.append(pid)
+
+    _clear_stack_pid_files()
+    return killed
 
 
 def _pids_for_module(module: str) -> list[int]:

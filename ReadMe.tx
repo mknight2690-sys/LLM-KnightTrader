@@ -170,31 +170,40 @@ KNIGHTTRADER_TRADE_MODE      game (default) — auto leverage ladder
 KNIGHTTRADER_MAX_LEVERAGE    Default 50
 
 ================================================================================
-4. RUNNING THE STACK
+4. RUNNING THE STACK (DESKTOP SHORTCUTS = SOURCE OF TRUTH)
 ================================================================================
 
-RECOMMENDED (operator default):
+AFTER INSTALL (one-time): agent may start once to verify, then run STOP.
+DAILY USE: only double-click desktop shortcuts — do not auto-start on login.
+
+START — desktop icon "Start LLM KnightTrader"
   launcher\Start LLM KnightTrader.bat
-  → starts dashboard.server + trader.agent
-  → opens http://127.0.0.1:8765
+  OR: python scripts\stack_launcher.py start --open-browser
+  What it does EVERY time:
+    1. STOP all LLM KnightTrader processes (dashboard, trader, monitor, watchers)
+    2. START fresh dashboard.server (http://127.0.0.1:8765)
+    3. START fresh trader.agent (one instance)
+    4. Ensure desktop Start/Stop shortcuts exist
 
-Manual modules:
-  python -m dashboard.server
-  python -m trader.agent
+STOP — desktop icon "Stop LLM KnightTrader"
+  launcher\Stop LLM KnightTrader.bat
+  OR: python scripts\stack_launcher.py stop
+  What it does:
+    - Kills dashboard, trader, monitor, babysit/watchers
+    - Clears pid files
+    - Verifies zero KT python processes remain
 
-Restart bots from dashboard (kills trader/monitor/watchers, starts one trader):
+Do NOT use `python -m trader.agent` or `python -m dashboard.server` for daily
+operation — that bypasses the desktop launcher and can leave duplicate stacks.
+
+Dashboard "Restart bots" button (while dashboard is already running):
   POST http://127.0.0.1:8765/api/stack/restart
+  → kills trader/monitor/watchers only, starts one trader (dashboard stays up)
 
 Stack status:
   GET http://127.0.0.1:8765/api/stack/status
 
-Stop:
-  launcher\Stop LLM KnightTrader.bat
-  OR scripts\stop_all.ps1 / scripts\kill_all.ps1
-
-IMPORTANT: trader.agent MUST run under Python 3.12+ (stack_control uses
-KNIGHTTRADER_PYTHON). Dashboard can use venv python; trader subprocess uses
-the configured 3.12 path.
+IMPORTANT: trader.agent MUST run under Python 3.12+ (KNIGHTTRADER_PYTHON).
 
 ================================================================================
 5. DASHBOARD FEATURES

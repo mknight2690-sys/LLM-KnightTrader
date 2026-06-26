@@ -50,10 +50,15 @@ STEP 2 — SET UP (follow ReadMe.tx)
   copy .env.example .env
   (fill credentials/blofin.txt and .env from my files — see Step 1A)
 
-  Start:
+  Start (first time — verify only):
   launcher\Start LLM KnightTrader.bat
   OR: powershell -File scripts\start_core.ps1 -OpenBrowser
   (creates Start/Stop desktop shortcuts automatically on successful start)
+
+  AFTER VERIFY: double-click "Stop LLM KnightTrader" on desktop.
+  DAILY USE: only double-click "Start LLM KnightTrader" to run the stack.
+  Start always: stops ALL KT instances → restarts dashboard + trader fresh.
+  Stop always: kills ALL KT instances (dashboard, trader, monitor, watchers).
 
   Dashboard: http://127.0.0.1:8765
 
@@ -73,6 +78,8 @@ RULES FOR YOU (the agent)
 
 - Read ReadMe.tx end-to-end before improvising.
 - Ask for credential FILE LOCATION first — then read/copy into credentials/blofin.txt and .env locally.
+- After install: verify once, then STOP stack — tell user daily control is desktop Start/Stop only.
+- Do not leave auto-start scripts, scheduled tasks, or background traders running after setup.
 - Do not push API keys to GitHub.
 - Confirm VPN exit country if I’m in a restricted region.
 - If trader won’t start: check data\logs\trader.err

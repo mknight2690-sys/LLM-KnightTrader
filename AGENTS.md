@@ -13,4 +13,6 @@ Do **not** use **US, Canada, Singapore, or Mexico** as VPN exit for BloFin.
 
 First successful start creates desktop shortcuts: **Start LLM KnightTrader** and **Stop LLM KnightTrader**.
 
+**Daily operation:** user double-clicks **Start** (cold restart: stop all → dashboard + trader) or **Stop** (kill entire stack). After setup verify, run Stop — do not leave stack running in background.
+
 Share prompt for others: **SHARE_PROMPT.txt** in repo root.
