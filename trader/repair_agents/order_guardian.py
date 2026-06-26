@@ -115,6 +115,12 @@ def _trade_fingerprint(account: dict, errors: list[dict]) -> str:
         inst = pos.get("instId", "?")
         upl = pos.get("upl", pos.get("unrealizedPnl", 0))
         parts.append(f"pos:{inst}:{upl}")
+        # Make missing-tpsl visible to the fingerprint so we can retry when
+        # the missing set changes.
+        has_tp = bool(pos.get("tp") or pos.get("tpTriggerPx"))
+        has_sl = bool(pos.get("sl") or pos.get("slTriggerPx"))
+        if not has_tp or not has_sl:
+            parts.append(f"missing_tpsl:{inst}")
     for e in errors[-3:]:
         parts.append(f"err:{e.get('title', '')[:30]}")
     return "|".join(parts) if parts else "ok"
@@ -151,7 +157,7 @@ def run_cycle(client, llm, state: dict) -> None:
     errors = _get_recent_trade_errors()
     fp = _trade_fingerprint(account, errors)
 
-    has_missing_tpsl = False
+    missing_positions: list[dict] = []
     position_lines = []
     for pos in positions[:10]:
         inst_id = pos.get("instId", "?")
@@ -162,12 +168,12 @@ def run_cycle(client, llm, state: dict) -> None:
         has_tp = bool(pos.get("tp") or pos.get("tpTriggerPx"))
         has_sl = bool(pos.get("sl") or pos.get("slTriggerPx"))
         if not has_tp or not has_sl:
-            has_missing_tpsl = True
+            missing_positions.append(pos)
         position_lines.append(
             f"  {inst_id} {side} sz={sz} lever={lever} upl={upl} tp={has_tp} sl={has_sl}"
         )
 
-    if not errors and not has_missing_tpsl and len(positions) <= 5:
+    if not errors and not missing_positions and len(positions) <= 5:
         return
 
     seen = state.setdefault("trade_fingerprints", {})
@@ -236,40 +242,50 @@ def run_cycle(client, llm, state: dict) -> None:
             seen[fp] = time.time()
         return
 
-    if has_missing_tpsl and positions:
-        pos = positions[0]
-        inst = pos.get("instId", "")
-        # Normalize TP/SL params:
-        # - dashboard/account caches use "long"/"short"
-        # - TP/SL attach expects "buy"/"sell"
-        # - exchange expects a positive contracts/order size
-        side_raw = str(pos.get("tdSide", pos.get("side", "buy")) or "").strip().lower()
-        if side_raw in ("buy", "long"):
-            side = "buy"
-        elif side_raw in ("sell", "short"):
-            side = "sell"
-        else:
-            side = side_raw or "buy"
+    if missing_positions:
+        # Aggressive but bounded: fix up to 3 missing positions per cycle.
+        # Deterministic repair plan will refresh account + retry_tpsl safely.
+        to_fix = missing_positions[:3]
+        recovered_any = False
+        for pos in to_fix:
+            inst = pos.get("instId", "")
+            if not inst:
+                continue
+            # Normalize TP/SL params:
+            # - dashboard/account caches use "long"/"short"
+            # - TP/SL attach expects "buy"/"sell"
+            # - exchange expects a positive contracts/order size
+            side_raw = str(pos.get("tdSide", pos.get("side", "buy")) or "").strip().lower()
+            if side_raw in ("buy", "long"):
+                side = "buy"
+            elif side_raw in ("sell", "short"):
+                side = "sell"
+            else:
+                side = side_raw or "buy"
 
-        sz_raw = pos.get("sz", pos.get("contracts", pos.get("size", "")))
-        try:
-            sz_val = float(sz_raw)
-            sz_abs = abs(sz_val)
-        except (TypeError, ValueError):
-            sz_abs = 0.0
-        if hasattr(client, "_format_order_size") and sz_abs > 0:
-            contracts = client._format_order_size(inst, sz_abs)
-        else:
-            contracts = str(sz_abs if sz_abs > 0 else sz_raw)
-        incident = {
-            "phase": "tpsl_failed",
-            "error": f"missing TP/SL on {inst}",
-            "instId": inst,
-            "side": side,
-            "contracts": contracts,
-        }
-        result = triage_with_repair_engine(client, llm, state, incident, label=LABEL)
-        if result and result.recovered:
+            sz_raw = pos.get("sz", pos.get("contracts", pos.get("size", "")))
+            try:
+                sz_val = float(sz_raw)
+                sz_abs = abs(sz_val)
+            except (TypeError, ValueError):
+                sz_abs = 0.0
+            if hasattr(client, "_format_order_size") and sz_abs > 0:
+                contracts = client._format_order_size(inst, sz_abs)
+            else:
+                contracts = str(sz_abs if sz_abs > 0 else sz_raw)
+
+            incident = {
+                "phase": "tpsl_failed",
+                "error": f"missing TP/SL on {inst}",
+                "instId": inst,
+                "side": side,
+                "contracts": contracts,
+            }
+            result = triage_with_repair_engine(client, llm, state, incident, label=LABEL)
+            if result and result.recovered:
+                recovered_any = True
+
+        if recovered_any:
             state["repairs_succeeded"] += 1
             seen[fp] = time.time()
 
