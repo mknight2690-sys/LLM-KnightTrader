@@ -73,6 +73,7 @@ def _pid_alive(pid: int) -> bool:
                  f"$p = Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" -ErrorAction SilentlyContinue; "
                  f"if ($p) {{ 'alive' }} else {{ 'dead' }}"],
                 stderr=subprocess.DEVNULL, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             return out.strip() == "alive"
         except (subprocess.SubprocessError, FileNotFoundError, ValueError):
@@ -924,6 +925,7 @@ def kill_agent_process() -> int:
                  "Get-CimInstance Win32_Process -Filter \"(Name='python.exe' OR Name='pythonw.exe') AND CommandLine LIKE '%repair_agents%'\" | "
                  "Select-Object ProcessId | ConvertTo-Json -Compress"],
                 stderr=subprocess.DEVNULL, text=True, timeout=8,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             ).strip()
             if cmd_raw and cmd_raw != "null":
                 rows = json.loads(cmd_raw)

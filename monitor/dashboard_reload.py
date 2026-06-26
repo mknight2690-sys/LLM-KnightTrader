@@ -62,6 +62,7 @@ def _dashboard_pids() -> list[int]:
             ],
             text=True,
             timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         ).strip()
         if not raw:
             return []

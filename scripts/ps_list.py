@@ -16,6 +16,7 @@ def main() -> None:
             "Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress",
         ],
         text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     ).strip()
     if not out:
         print("none")
@@ -32,6 +33,7 @@ def main() -> None:
                 r"C:\Users\mknig\hermes-llm-trader\scripts\kill_all.ps1",
             ],
             check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
 

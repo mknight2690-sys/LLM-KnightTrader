@@ -37,6 +37,7 @@ def _restart_stack() -> str:
         cwd=str(ROOT),
         timeout=120,
         check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     return "restarted_services"
 

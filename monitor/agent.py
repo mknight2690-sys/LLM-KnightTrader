@@ -75,6 +75,7 @@ def _process_count(module_fragment: str) -> int:
             ],
             text=True,
             timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return int(out.strip() or "0")
     except (subprocess.SubprocessError, ValueError):

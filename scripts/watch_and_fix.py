@@ -49,6 +49,7 @@ def apply(action: str) -> None:
         subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "restart_services.ps1")],
             check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     if action == "rehydrate_account":
         subprocess.run([PYTHON, "-c", f"import sys; sys.path.insert(0, r'{ROOT}'); from blofin.account_cache import bootstrap_account_cache; bootstrap_account_cache()"], check=False)

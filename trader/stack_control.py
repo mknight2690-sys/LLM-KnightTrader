@@ -153,6 +153,7 @@ def _enumerate_python_processes() -> list[dict[str, Any]]:
                 ["powershell", "-NoProfile", "-Command", script],
                 text=True,
                 timeout=20,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             ).strip()
         except (subprocess.SubprocessError, FileNotFoundError):
             return []
@@ -258,6 +259,7 @@ def _parent_pid_map() -> dict[int, int]:
             ["powershell", "-NoProfile", "-Command", script],
             text=True,
             timeout=20,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         ).strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         return {}
@@ -804,6 +806,7 @@ def ensure_desktop_shortcuts() -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc))[:300]

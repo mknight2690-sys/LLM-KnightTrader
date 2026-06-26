@@ -11,6 +11,7 @@ if sys.platform == "win32":
         out = subprocess.check_output(
             ['powershell', '-NoProfile', '-Command', cmd],
             stderr=subprocess.DEVNULL, text=True, timeout=8,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         ).strip()
         if out and out != "null":
             import json
@@ -23,6 +24,7 @@ if sys.platform == "win32":
                     subprocess.Popen(
                         ['taskkill', '/PID', str(pid), '/F'],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
                     )
                     print(f"Killed {pid}")
     except Exception as e:
