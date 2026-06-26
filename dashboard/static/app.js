@@ -277,14 +277,19 @@ function renderStackStatus(payload) {
 
   const stack = payload?.stack || payload || {};
   const issues = payload?.issues || [];
+  const dashboard = stack?.dashboard || {};
   const trader = stack?.trader || {};
   const status = trader.status || "offline";
   dot.dataset.state = status;
 
-  if (status === "online") {
+  if (status === "online" && dashboard.status !== "duplicate") {
     label.textContent = `Trader online (pid ${trader.pid})`;
-  } else if (status === "duplicate") {
-    label.textContent = `Trader duplicate (${trader.count})`;
+  } else if (status === "duplicate" || dashboard.status === "duplicate") {
+    const parts = [];
+    if (dashboard.status === "duplicate") parts.push(`dashboard×${dashboard.count}`);
+    if (status === "duplicate") parts.push(`trader×${trader.count}`);
+    label.textContent = `Duplicate: ${parts.join(", ")}`;
+    dot.dataset.state = "duplicate";
   } else {
     label.textContent = "Trader offline";
   }
@@ -318,10 +323,31 @@ async function refreshStackStatus() {
   }
 }
 
+async function waitForStackHealth(timeoutMs = 90000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) return true;
+    } catch (_) {
+      // dashboard restarting
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return false;
+}
+
 async function restartStack() {
   const btn = $("restart-stack-btn");
   if (!btn || stackRestarting) return;
-  if (!confirm("Kill all bots (trader, monitor, watchers) and start a single trader?")) return;
+  if (
+    !confirm(
+      "Stop ALL LLM KnightTrader processes and restart one dashboard + one trader?\n\n" +
+        "Same as the desktop Start shortcut. The stack operator will reconnect when ready."
+    )
+  ) {
+    return;
+  }
 
   stackRestarting = true;
   btn.disabled = true;
@@ -329,16 +355,28 @@ async function restartStack() {
   try {
     const res = await fetch("/api/stack/restart", { method: "POST" });
     const data = await res.json();
-    renderStackStatus(data.stack || data);
-    const trader = data.trader || {};
-    if (!trader.ok) {
-      alert(trader.error || "Trader failed to start");
+    if (!data.ok) {
+      alert(data.error || "Full stack restart failed to start");
+      return;
     }
+
+    btn.textContent = "Reconnecting…";
+    const up = await waitForStackHealth();
+    if (up) {
+      window.location.reload();
+      return;
+    }
+    alert("Restart started but dashboard did not come back in time. Try the desktop Start shortcut.");
   } catch (err) {
+    const up = await waitForStackHealth(30000);
+    if (up) {
+      window.location.reload();
+      return;
+    }
     alert("Restart failed: " + err.message);
   } finally {
     stackRestarting = false;
-    btn.textContent = "Restart bots";
+    btn.textContent = "Restart traders";
     btn.disabled = false;
     refreshStackStatus();
   }

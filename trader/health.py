@@ -144,6 +144,20 @@ def acquire_trader_lock() -> bool:
     return False
 
 
+def trader_lock_owner() -> int | None:
+    """Return alive PID holding trader.lock, or None."""
+    lock_path = PID_DIR / "trader.lock"
+    if not lock_path.is_file():
+        return None
+    try:
+        owner = int(lock_path.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return None
+    if owner > 0 and _pid_alive(owner):
+        return owner
+    return None
+
+
 def _lock_is_stale(lock_path: Path) -> bool:
     try:
         raw = lock_path.read_text(encoding="utf-8").strip()
@@ -154,8 +168,8 @@ def _lock_is_stale(lock_path: Path) -> bool:
         return True
     if not _pid_alive(owner):
         return True
-    live = _trader_pids()
-    return owner not in live
+    # WMI cmdline scan can lag; alive PID with lock is authoritative.
+    return False
 
 
 def release_trader_lock() -> None:

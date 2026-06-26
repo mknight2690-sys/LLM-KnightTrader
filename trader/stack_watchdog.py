@@ -10,7 +10,7 @@ from activity_log import log_event
 from config import ACCOUNT_REFRESH_SEC
 
 _DASHBOARD_BOOT_TS = 0.0
-_BOOT_GRACE_SEC = 45.0
+_BOOT_GRACE_SEC = 90.0
 _LAST_RUN_TS = 0.0
 _MIN_INTERVAL_SEC = 12.0
 _LAST_REPAIR_TS = 0.0
@@ -50,8 +50,13 @@ def diagnose_stack() -> list[dict[str, Any]]:
     )
     from trader.stack_control import stack_status
 
+    from trader.stack_operator import stack_starting
+
     issues: list[dict[str, Any]] = []
     stack = stack_status()
+    if stack_starting():
+        return issues
+
     account = read_account_cached()
     disk = _read_disk() or {}
 
@@ -64,6 +69,16 @@ def diagnose_stack() -> list[dict[str, Any]]:
                 "trader_duplicate",
                 severity="critical",
                 detail=f"{trader.get('count', 0)} trader processes",
+            )
+        )
+
+    dashboard = stack.get("dashboard") or {}
+    if dashboard.get("status") == "duplicate":
+        issues.append(
+            _issue(
+                "dashboard_duplicate",
+                severity="critical",
+                detail=f"{dashboard.get('count', 0)} dashboard processes",
             )
         )
 
@@ -169,27 +184,13 @@ def _repair_account_display() -> str:
 def _repair_known_issue(issue: dict[str, Any]) -> tuple[bool, str]:
     code = str(issue.get("code") or "")
 
-    if code == "trader_offline":
-        if _DASHBOARD_BOOT_TS and time.time() - _DASHBOARD_BOOT_TS < _BOOT_GRACE_SEC:
+    if code in ("trader_duplicate", "extra_bots_running", "dashboard_duplicate", "trader_offline"):
+        if code == "trader_offline" and _DASHBOARD_BOOT_TS and time.time() - _DASHBOARD_BOOT_TS < _BOOT_GRACE_SEC:
             return False, "startup grace — launcher owns trader start"
-        from trader.stack_control import start_single_trader
+        from trader.stack_operator import reconcile_stack
 
-        result = start_single_trader()
-        return bool(result.get("ok")), str(result.get("error") or f"pid {result.get('pid')}")
-
-    if code in ("trader_duplicate", "extra_bots_running"):
-        from trader.stack_control import dedupe_preferred_trader, stack_status
-
-        keep = dedupe_preferred_trader()
-        stack = stack_status()
-        trader = stack.get("trader") or {}
-        if trader.get("status") == "offline":
-            from trader.stack_control import start_single_trader
-
-            started = start_single_trader()
-            if not started.get("ok"):
-                return False, str(started.get("error") or "failed to restart trader")
-        return bool(keep), f"kept trader pid {keep}"
+        result = reconcile_stack(allow_start_trader=True)
+        return bool(result.get("ok")), json.dumps(result.get("actions") or result.get("issues"))[:300]
 
     if code == "desktop_shortcuts_missing":
         from trader.stack_control import ensure_desktop_shortcuts
@@ -247,6 +248,11 @@ def _repair_with_llm(issues: list[dict[str, Any]]) -> tuple[bool, str]:
         return False, str(exc)[:200]
 
 
+_REPAIR_PROCESS_CODES = frozenset(
+    {"trader_offline", "trader_duplicate", "dashboard_duplicate", "extra_bots_running"}
+)
+
+
 def run_stack_watchdog(*, allow_llm: bool = True) -> dict[str, Any]:
     """Diagnose stack health and apply repairs. Safe to call from dashboard loop."""
     global _LAST_RUN_TS, _LAST_REPAIR_TS
@@ -256,17 +262,37 @@ def run_stack_watchdog(*, allow_llm: bool = True) -> dict[str, Any]:
         return {"skipped": True, "reason": "interval"}
     _LAST_RUN_TS = now
 
+    from trader.stack_operator import run_operator_cycle
+
+    operator = run_operator_cycle(allow_llm=allow_llm)
+    if operator.get("skipped"):
+        return operator
+
     issues = diagnose_stack()
-    if not issues:
-        return {"ok": True, "issues": [], "repaired": [], "healthy": True}
+    if not issues and operator.get("healthy"):
+        return {
+            "ok": True,
+            "issues": [],
+            "repaired": [],
+            "healthy": True,
+            "operator": operator,
+        }
 
     repaired: list[dict[str, Any]] = []
-    unresolved: list[dict[str, Any]] = []
+    for action in operator.get("reconcile", {}).get("actions") or []:
+        repaired.append({"code": "stack_operator", "ok": True, "detail": str(action)[:300]})
+    if operator.get("llm_used"):
+        repaired.append({"code": "stack_operator_llm", "ok": True, "detail": operator.get("llm_detail", "")})
 
+    unresolved: list[dict[str, Any]] = []
     can_repair = now - _LAST_REPAIR_TS >= _REPAIR_COOLDOWN_SEC
+    operator_handled_process = bool(operator.get("reconcile", {}).get("ok"))
+
     for issue in issues:
         if not issue.get("auto", True):
             unresolved.append(issue)
+            continue
+        if issue.get("code") in _REPAIR_PROCESS_CODES and operator_handled_process:
             continue
         if not can_repair:
             unresolved.append(issue)
@@ -284,8 +310,8 @@ def run_stack_watchdog(*, allow_llm: bool = True) -> dict[str, Any]:
                 detail[:300],
             )
 
-    llm_used = False
-    llm_detail = ""
+    llm_used = bool(operator.get("llm_used"))
+    llm_detail = operator.get("llm_detail", "")
     critical_unresolved = [i for i in unresolved if i.get("severity") == "critical"]
     if allow_llm and critical_unresolved and can_repair:
         llm_ok, llm_detail = _repair_with_llm(critical_unresolved)
@@ -315,4 +341,5 @@ def run_stack_watchdog(*, allow_llm: bool = True) -> dict[str, Any]:
         "unresolved": [{"code": i.get("code"), "detail": i.get("detail", "")[:160]} for i in unresolved],
         "llm_used": llm_used,
         "llm_detail": llm_detail[:200],
+        "operator": operator,
     }

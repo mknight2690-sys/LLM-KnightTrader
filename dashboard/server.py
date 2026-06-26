@@ -29,7 +29,7 @@ from trader.directives import operator_instructions
 from trader.baseline import parse_baseline_command, progress_summary, set_user_baseline
 from trader.learning import lessons_digest
 from trader.order_guard import execution_context
-from trader.stack_control import restart_bots, stack_status
+from trader.stack_control import restart_traders, stack_status
 from trader.stack_watchdog import diagnose_stack, mark_dashboard_boot, run_stack_watchdog
 from blofin.account_cache import guard_account_stream
 from trader.state import append_chat, append_user_directive, load_state, reload_chat_fields, save_state
@@ -165,9 +165,9 @@ def _bootstrap_account_cache() -> None:
 
 
 async def _stack_watchdog_loop() -> None:
-    """Bot process health — trader, monitor, watchers."""
+    """Full-time stack operator — process reconcile + account repair + LLM escalation."""
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)
         try:
             result = await asyncio.to_thread(run_stack_watchdog)
             if result.get("repaired"):
@@ -265,18 +265,16 @@ async def api_stack_repair() -> dict[str, Any]:
 
 @app.post("/api/stack/restart")
 async def api_stack_restart() -> dict[str, Any]:
-    result = await asyncio.to_thread(restart_bots)
-    trader = result.get("trader") or {}
-    stack = result.get("stack") or {}
+    result = await asyncio.to_thread(restart_traders)
     log_event(
         "system",
-        "Bot stack restarted",
+        "Restart traders requested",
         json.dumps(
             {
-                "killed_pids": result.get("killed_pids", []),
-                "trader_ok": trader.get("ok"),
-                "trader_pid": trader.get("pid"),
-                "trader_status": (stack.get("trader") or {}).get("status"),
+                "mode": result.get("mode"),
+                "spawned_pid": result.get("spawned_pid"),
+                "ok": result.get("ok"),
+                "error": result.get("error"),
             }
         ),
     )

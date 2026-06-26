@@ -5,16 +5,22 @@ from __future__ import annotations
 from typing import Any
 
 STACK_FIX_PLAYBOOK = """
-LLM KnightTrader stack repair (deterministic first, repair LLM second):
+LLM KnightTrader stack repair (stack_operator + repair LLM):
+
+FULL-TIME STACK OPERATOR (dashboard loop every 15s)
+- reconcile_stack: kill monitor/watchers, dedupe dashboard+trader, start trader if offline
+- After 2 failed reconciles: repair LLM triage with stack_fix_context
+- cold_start_stack / cold_stop_stack: desktop Start and Stop shortcuts
+- restart_traders: dashboard button + spawn stack_launcher.py start (detached)
 
 PROCESS / LAUNCHER
-- trader_offline (after 45s dashboard boot grace): start_trader
-- trader_duplicate: dedupe_traders, then start_trader if still offline
-- extra_bots_running (monitor/watchers): kill_extra_bots
-- desktop_shortcuts_missing: create_desktop_shortcuts (MANDATORY during agent setup too)
+- trader_offline (after 45s dashboard boot grace): reconcile_stack → start_trader
+- trader_duplicate / dashboard_duplicate: dedupe, then start if needed
+- extra_bots_running (monitor/watchers): kill_extra_bots via reconcile
+- desktop_shortcuts_missing: create_desktop_shortcuts (MANDATORY during agent setup)
 - Daily user control: desktop Start LLM KnightTrader / Stop LLM KnightTrader ONLY
 - Never use python -m trader.agent or python -m dashboard.server for daily ops
-- Full cold restart: python scripts/stack_launcher.py start (stop all, then one dashboard + one trader)
+- Full cold restart: python scripts/stack_launcher.py start
 
 CREDENTIALS
 - credentials_missing: ask user for BloFin keys in chat or file path; write credentials/blofin.txt + .env
@@ -33,7 +39,9 @@ TRADING
 
 WINDOWS
 - Stale trader.lock / trader.pid: stop stack (stack_launcher.py stop) clears locks
-- Trader launch: use -c "from trader.agent import main; main()" not python -m trader.agent
+- Trader launch: -c "from trader.agent import main; main()" with KNIGHTTRADER_PYTHON pinned
+- Dashboard launch: -c "from dashboard.server import main; main()"
+- taskkill /T for process trees on stop
 """.strip()
 
 
