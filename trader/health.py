@@ -140,6 +140,19 @@ def release_trader_lock() -> None:
         pass
 
 
+def trader_lock_owner() -> int | None:
+    """Return the PID of the trader lock holder, or None if no valid lock."""
+    if not TRADER_PID_FILE.is_file():
+        return None
+    try:
+        pid = int(TRADER_PID_FILE.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return None
+    if pid > 0 and _pid_alive(pid):
+        return pid
+    return None
+
+
 def normalize_decision(raw: dict[str, Any]) -> dict[str, Any]:
     """Reject API error blobs and invalid actions before execution."""
     if not isinstance(raw, dict):
