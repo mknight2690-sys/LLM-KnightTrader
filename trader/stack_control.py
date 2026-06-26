@@ -529,12 +529,12 @@ def spawn_full_stack_restart() -> dict[str, Any]:
 
 
 def _stack_env() -> dict[str, Any]:
-    """Environment info for monitor processes."""
-    return {
-        "project_root": str(PROJECT_ROOT),
-        "python": _trader_python(),
-        "pid_dir": str(PID_DIR),
-    }
+    """Full environment dict for spawning subprocesses (used as env= parameter)."""
+    env = dict(os.environ)
+    env["PROJECT_ROOT"] = str(PROJECT_ROOT)
+    env["PYTHON"] = _trader_python()
+    env["PID_DIR"] = str(PID_DIR)
+    return env
 
 
 # --- Stack starting state tracking ---
