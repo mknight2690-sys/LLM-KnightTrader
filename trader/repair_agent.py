@@ -143,6 +143,8 @@ def agent_main(
     try:
         while True:
             try:
+                # If the dashboard queued a manual repair request, run the repair engine now.
+                maybe_handle_manual_repair_requests(client, llm, state, label=label)
                 run_cycle_fn(client, llm, state)
                 state["consecutive_errors"] = 0
             except SystemExit:
@@ -220,6 +222,70 @@ def get_recent_errors(limit: int = 50) -> list[dict]:
         out.append(event)
     out.reverse()
     return out
+
+
+def maybe_handle_manual_repair_requests(
+    client: Any,
+    llm: LLMWrapper,
+    state: dict[str, Any],
+    *,
+    label: str = "repair_agent",
+    max_requests_per_cycle: int = 1,
+) -> bool:
+    """Process any dashboard-queued 'Manual repair request' events."""
+    try:
+        recent = get_recent(limit=250)
+    except Exception:
+        return False
+
+    startup_ts = float(state.get("startup_ts") or 0.0)
+    done_list: list[str] = list(state.get("_manual_repair_done") or [])
+    done = set(done_list)
+
+    processed = 0
+    for ev in reversed(recent):
+        try:
+            if processed >= max_requests_per_cycle:
+                break
+
+            if str(ev.get("title") or "") != "Manual repair request":
+                continue
+
+            ev_ts = float(ev.get("ts") or 0.0)
+            if ev_ts and ev_ts < startup_ts:
+                continue
+
+            detail = str(ev.get("detail") or "")
+            if not detail.strip():
+                continue
+
+            fp_src = f"manual_repair:{ev.get('title')}:{detail}"
+            fp = hashlib.sha1(fp_src.encode("utf-8", "ignore")).hexdigest()[:16]
+            if fp in done:
+                continue
+
+            done.add(fp)
+            done_list.append(fp)
+            state["_manual_repair_done"] = done_list
+
+            incident = {
+                "phase": "manual_repair",
+                "title": "Manual repair request",
+                "error": detail[:4000],
+            }
+
+            triage_with_repair_engine(
+                client=client,
+                llm=llm,
+                state=state,
+                incident=incident,
+                label=label,
+            )
+            processed += 1
+        except Exception:
+            continue
+
+    return processed > 0
 
 
 def get_log_tail(filename: str, lines: int = 80) -> str:

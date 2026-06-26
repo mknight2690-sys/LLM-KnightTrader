@@ -378,6 +378,23 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
     save_state(state)
     log_event("chat", "You", req.message, {"status": "received", "wired_to_trader": True})
 
+    def _is_manual_repair_message(msg: str) -> bool:
+        m = (msg or "").strip().lower()
+        # Explicit "repair/stop trading and fix" commands to avoid accidental trading actions.
+        return m.startswith("repair:") or m.startswith("fix:") or m.startswith("repair ") or m.startswith("fix ")
+
+    if _is_manual_repair_message(req.message):
+        # Queue: repair techs watch for this in the activity log.
+        log_event("system", "Manual repair request", req.message[:2000], {"source": "dashboard_chat"})
+        reply = (
+            "Repair request queued for the autonomous repair techs. "
+            "Watch the Activity Log and repair_* logs for progress."
+        )
+        append_chat(state, "assistant", reply)
+        save_state(state)
+        log_event("chat", CHAT_AGENT_NAME, reply, {"status": "queued_manual_repair"})
+        return {"reply": reply, "queued_manual_repair": True}
+
     try:
         from blofin.account_cache import read_account_cached
 
