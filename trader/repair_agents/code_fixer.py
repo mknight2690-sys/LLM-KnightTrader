@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 from activity_log import get_recent
 from config import DATA_DIR, PROJECT_ROOT
 from trader.repair_agent import (
+    TECHNICIAN_METHOD,
     agent_main,
     get_log_tail,
     get_recent_errors,
@@ -27,7 +28,9 @@ from trader.repair_agent import (
     log_err,
     log_warn,
     llm_ask,
+    parse_llm_json,
     read_file_safe,
+    source_context_around_line,
     write_file_safe,
     run_cmd,
 )
@@ -38,12 +41,14 @@ LOOP_SEC = 30.0
 
 SYSTEM = (
     "You are the LLM KnightTrader **Code Fixer** — a master software engineer.\n\n"
+    + TECHNICIAN_METHOD
+    + "\n\n"
     "You diagnose and fix ANY code bug from tracebacks and error logs.\n"
-    "You read source files to understand the code, then apply precise fixes.\n\n"
-    "YOUR MINDSET:\n"
+    "You do NOT need prior knowledge of this codebase — read the source around the error line.\n\n"
+    "WORKFLOW:\n"
     "1. SYMPTOM: Read the traceback/error\n"
-    "2. DIAGNOSIS: Read the relevant source file\n"
-    "3. ROOT CAUSE: Find the exact broken line\n"
+    "2. READ: Study the source_context lines provided (>>> marks the error line)\n"
+    "3. ROOT CAUSE: Find the exact broken logic\n"
     "4. FIX: Output a precise search-and-replace patch\n\n"
     "YOUR TOOLS:\n"
     "- read_file_safe(path) — read any source file\n"
@@ -102,9 +107,18 @@ def _extract_traceback(detail: str) -> dict | None:
     if not project_files:
         project_files = files
     target = project_files[-1]
+    abs_path = target[0]
+    rel = abs_path
+    try:
+        from config import PROJECT_ROOT
+        rel = str(Path(abs_path).resolve().relative_to(PROJECT_ROOT.resolve()))
+    except (ValueError, OSError):
+        if "llm-knighttrader" in abs_path.replace("\\", "/"):
+            rel = abs_path.split("llm-knighttrader")[-1].lstrip("/\\")
     return {
         "type": "traceback",
-        "file": target[0],
+        "file": rel,
+        "abs_file": abs_path,
         "line": int(target[1]),
         "function": target[2],
         "error": error_match.group(1).strip()[:200],
@@ -151,8 +165,12 @@ def run_cycle(client, llm, state: dict) -> None:
     for i, bug in enumerate(bugs[-5:]):
         lines.append(f"--- Bug {i+1} ---")
         if bug["type"] == "traceback":
-            lines.append(f"File: {bug['file']} line {bug['line']} in {bug['function']}")
+            rel = bug.get("file", "")
+            lines.append(f"File: {rel} line {bug['line']} in {bug['function']}")
             lines.append(f"Error: {bug['error']}")
+            ctx = source_context_around_line(rel, bug["line"])
+            if ctx:
+                lines.append(f"Source context:\n{ctx}")
             lines.append(f"Traceback:\n{bug['full_traceback'][-600:]}")
         else:
             lines.append(f"Type: {bug['type']}")
@@ -174,14 +192,10 @@ def run_cycle(client, llm, state: dict) -> None:
         return
 
     try:
-        plan = json.loads(answer)
-    except (json.JSONDecodeError, ValueError):
-        stripped = answer.strip()
-        if stripped.startswith("```"):
-            stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
-            if stripped.endswith("```"):
-                stripped = stripped[:-3]
-        plan = json.loads(stripped.strip())
+        plan = parse_llm_json(answer)
+    except (json.JSONDecodeError, ValueError) as exc:
+        log_warn(LABEL, "LLM parse failed", str(exc)[:120])
+        return
 
     if not plan.get("file") or not plan.get("search_text"):
         log(LABEL, "Diagnosis (no auto-fix)", plan.get("diagnosis", "")[:200])

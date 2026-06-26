@@ -233,6 +233,105 @@ def list_source_files() -> list[str]:
     return sorted(files)
 
 
+# --- Technician diagnostic framework (shared by all 3 repair agents) ---
+
+TECHNICIAN_METHOD = """DIAGNOSTIC METHOD — work like an automotive technician with zero prior knowledge:
+1. OBSERVE symptoms only (errors, logs, process counts, port health, account state).
+2. HYPOTHESIZE 2-3 root causes from evidence — do not guess without data.
+3. TEST with low-risk actions first (refresh_account, read logs, stack_status).
+4. ACT using repair_action_catalog types only — never invent action types.
+5. VERIFY: re-check stack_status / port / errors after each fix."""
+
+REPAIR_AGENT_MODULES: tuple[str, ...] = (
+    "trader.repair_agents.watchdog",
+    "trader.repair_agents.code_fixer",
+    "trader.repair_agents.order_guardian",
+)
+
+
+def parse_llm_json(text: str) -> dict[str, Any]:
+    """Parse JSON from LLM response, stripping markdown fences if present."""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        raw = raw[start : end + 1]
+    plan = json.loads(raw)
+    if not isinstance(plan, dict):
+        raise ValueError("LLM response is not a JSON object")
+    return plan
+
+
+def triage_with_repair_engine(
+    client: Any,
+    llm: LLMWrapper,
+    state: dict[str, Any],
+    incident: dict[str, Any],
+    *,
+    label: str = "repair_agent",
+) -> Any:
+    """Run full deterministic + LLM repair pipeline (same as trader/repair.py)."""
+    from blofin.account_cache import read_account_cached
+    from trader.repair import llm_triage_and_repair
+    from trader.state import save_state
+
+    account = read_account_cached() or {}
+    try:
+        result = llm_triage_and_repair(state, client, llm, account, None, incident=incident)
+        save_state(state)
+        log(label, "Repair engine result", f"recovered={result.recovered} | {result.diagnosis[:180]}")
+        return result
+    except Exception as exc:
+        log_err(label, "Repair engine failed", str(exc)[:300])
+        return None
+
+
+def execute_catalog_actions(
+    client: Any,
+    llm: LLMWrapper,
+    state: dict[str, Any],
+    actions: list[dict[str, Any]],
+    *,
+    label: str = "repair_agent",
+) -> list[str]:
+    """Execute a list of repair catalog actions; returns labels of what ran."""
+    from blofin.account_cache import read_account_cached
+    from trader.repair import execute_repair_action
+
+    account = read_account_cached() or {}
+    taken: list[str] = []
+    for action in actions[:5]:
+        if not isinstance(action, dict):
+            continue
+        atype = str(action.get("type") or "")
+        label_out, ok, _ = execute_repair_action(state, client, llm, account, None, action)
+        taken.append(f"{label_out}:{'ok' if ok else 'fail'}")
+        log(label, f"Action {atype}", f"{'ok' if ok else 'fail'}")
+    return taken
+
+
+def source_context_around_line(rel_path: str, line_no: int, *, radius: int = 12) -> str:
+    """Return source lines around an error line for code-fixer context."""
+    path = PROJECT_ROOT / rel_path
+    source = read_file_safe(path)
+    if not source:
+        return ""
+    lines = source.splitlines()
+    idx = max(0, min(line_no - 1, len(lines) - 1))
+    start = max(0, idx - radius)
+    end = min(len(lines), idx + radius + 1)
+    out = []
+    for i in range(start, end):
+        marker = ">>>" if i == idx else "   "
+        out.append(f"{marker} {i + 1:4d}| {lines[i]}")
+    return "\n".join(out)
+
+
 def kill_agent_process() -> int:
     killed = 0
     try:

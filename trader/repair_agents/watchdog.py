@@ -1,11 +1,8 @@
 """Repair Agent 1 — Watchdog.
 
-A master systems technician for the LLM KnightTrader stack.
-Diagnoses from evidence, doesn't need prior knowledge of the codebase.
-Reads logs, checks processes, inspects source, applies fixes, restarts.
-
-Think of it like a car mechanic who doesn't know the model but listens
-to the engine, checks the dashboard lights, reads the error codes, and fixes.
+Master systems technician for the LLM KnightTrader stack.
+Diagnoses from evidence only — like a mechanic who has never seen this car before
+but reads the dash lights, listens to the engine, pulls error codes, and fixes it.
 """
 
 from __future__ import annotations
@@ -20,198 +17,172 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from activity_log import get_recent
-from config import DASHBOARD_PORT, DATA_DIR, PROJECT_ROOT
+from config import DASHBOARD_PORT
 from trader.repair_agent import (
+    TECHNICIAN_METHOD,
     agent_main,
+    get_log_tail,
     get_recent_errors,
     get_stack_status,
-    get_log_tail,
     list_source_files,
     log,
-    log_err,
     log_warn,
-    llm_ask,
-    read_file_safe,
-    write_file_safe,
-    run_cmd,
+    triage_with_repair_engine,
 )
-from trader.health import kill_duplicate_traders
 
 AGENT_NAME = "watchdog"
 LABEL = "Repair[Watchdog]"
 LOOP_SEC = 15.0
 
-SYSTEM = (
-    "You are the LLM KnightTrader **Watchdog** — a master operations technician.\n\n"
-    "You diagnose and fix ANYTHING that goes wrong with the stack. You don't need to\n"
-    "know the codebase in advance — you read source files, logs, and error messages\n"
-    "to figure out what's happening, just like a mechanic diagnosing a car from sounds\n"
-    "and warning lights.\n\n"
-    "YOUR TOOLS:\n"
-    "- read_file_safe(path) — read any source file\n"
-    "- write_file_safe(path, content) — edit source\n"
-    "- get_stack_status() — process counts, health\n"
-    "- get_recent_errors() — activity log errors\n"
-    "- get_log_tail(filename) — read recent log lines\n"
-    "- list_source_files() — list all .py files\n"
-    "- run_cmd(cmd_list) — run shell command\n\n"
-    "YOUR PERSONALITY:\n"
-    "- Methodical: gather evidence before acting\n"
-    "- Conservative: prefer hold over reckless action\n"
-    "- Thorough: after fixing, verify the fix worked\n"
-    "- Learning: remember patterns in state[seen_fingerprints]\n\n"
-    "RESPOND ONLY with valid JSON (no markdown):\n"
-    "{\n"
-    '  "diagnosis": "What you found and why (max 300 chars)",\n'
-    '  "confidence": 0-100,\n'
-    '  "actions_taken": ["description of what you did"],\n'
-    '  "fixed": true|false,\n'
-    '  "needs_human": false,\n'
-    '  "notes": "Anything worth remembering"\n'
-    "}\n\n"
-    "If everything is fine: {\"diagnosis\":\"all clear\",\"confidence\":100,\"actions_taken\":[],\"fixed\":true,\"needs_human\":false}\n"
-)
-
 
 def _check_port() -> bool:
     import urllib.request
+
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{DASHBOARD_PORT}/api/health", timeout=3.0) as r:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{DASHBOARD_PORT}/api/health", timeout=3.0
+        ) as r:
             return r.status == 200
     except Exception:
         return False
 
 
 def _gather_evidence() -> dict:
-    """Collect all diagnostic information."""
-    evidence = {}
+    evidence: dict = {}
     try:
         evidence["stack_status"] = get_stack_status()
-    except Exception as e:
-        evidence["stack_status_error"] = str(e)
+    except Exception as exc:
+        evidence["stack_status_error"] = str(exc)
     evidence["port_alive"] = _check_port()
     errors = get_recent_errors(30)
     evidence["error_count"] = len(errors)
     evidence["recent_errors"] = [
-        {"title": e.get("title",""), "detail": e.get("detail","")[:200], "ts": e.get("ts",0)}
-        for e in errors[-5:]
+        {
+            "title": e.get("title", ""),
+            "detail": e.get("detail", "")[:200],
+            "ts": e.get("ts", 0),
+        }
+        for e in errors[-8:]
     ]
-    trader_log = get_log_tail("trader.err", 40)
+    trader_log = get_log_tail("trader.err", 50)
     if trader_log:
-        evidence["trader_log_tail"] = trader_log[-800:]
+        evidence["trader_log_tail"] = trader_log[-1200:]
+    dash_log = get_log_tail("dashboard.err", 30)
+    if dash_log:
+        evidence["dashboard_log_tail"] = dash_log[-600:]
     recent_events = []
-    for e in get_recent(15):
+    for e in get_recent(20):
         if e.get("type") != "error":
-            recent_events.append({"type": e.get("type",""), "title": e.get("title",""), "detail": e.get("detail","")[:100]})
-    evidence["recent_activity"] = recent_events
+            recent_events.append(
+                {
+                    "type": e.get("type", ""),
+                    "title": e.get("title", ""),
+                    "detail": e.get("detail", "")[:120],
+                }
+            )
+    evidence["recent_activity"] = recent_events[-10:]
+    evidence["source_file_count"] = len(list_source_files())
     return evidence
 
 
 def _fingerprint(evidence: dict) -> str:
-    """Create a fingerprint to avoid repeating the same repair."""
-    parts = []
+    parts: list[str] = []
     if not evidence.get("port_alive"):
         parts.append("port_dead")
-    trader_info = evidence.get("stack_status", {}).get("trader", {})
+    trader_info = (evidence.get("stack_status") or {}).get("trader", {})
+    dash_info = (evidence.get("stack_status") or {}).get("dashboard", {})
     if trader_info.get("status") == "offline":
         parts.append("trader_offline")
-    if trader_info.get("count", 0) > 1:
+    if trader_info.get("count", 0) > 1 or trader_info.get("status") == "duplicate":
         parts.append("trader_dupes")
+    if dash_info.get("status") == "offline":
+        parts.append("dashboard_offline")
+    if dash_info.get("count", 0) > 1:
+        parts.append("dashboard_dupes")
     for e in evidence.get("recent_errors", []):
-        err = e.get("detail", "")[:60]
-        parts.append(f"err:{err}")
+        parts.append(f"err:{e.get('title', '')[:40]}")
     return "|".join(parts) if parts else "ok"
 
 
+def _build_incident(evidence: dict, reconcile: dict | None) -> dict:
+    issues = (reconcile or {}).get("issues") or []
+    issue_codes = [
+        str(i.get("code") or i) if isinstance(i, dict) else str(i) for i in issues
+    ]
+    err_blob = "; ".join(
+        f"{e.get('title')}: {e.get('detail', '')[:80]}"
+        for e in evidence.get("recent_errors", [])[-3:]
+    )
+    if not err_blob and issue_codes:
+        err_blob = "; ".join(issue_codes[:6])
+    if not err_blob:
+        if not evidence.get("port_alive"):
+            err_blob = "dashboard port not responding"
+        elif (evidence.get("stack_status") or {}).get("trader", {}).get("status") == "offline":
+            err_blob = "trader_offline"
+        else:
+            err_blob = "stack anomaly"
+
+    return {
+        "phase": "repair_watchdog",
+        "error": err_blob[:400],
+        "title": "Watchdog anomaly",
+        "issues": issues,
+        "evidence": {
+            "port_alive": evidence.get("port_alive"),
+            "stack": evidence.get("stack_status"),
+            "reconcile_actions": (reconcile or {}).get("actions"),
+        },
+    }
+
+
 def run_cycle(client, llm, state: dict) -> None:
-    now = time.time()
+    from trader.stack_operator import reconcile_stack
+
+    # Step 1: deterministic reconcile (kill dupes, start offline trader)
+    reconcile = reconcile_stack(allow_start_trader=True)
+
     evidence = _gather_evidence()
     fp = _fingerprint(evidence)
 
-    if fp == "ok":
+    if fp == "ok" and reconcile.get("ok"):
         return
 
-    if fp in state.get("seen_fingerprints", []):
+    # Cooldown: don't hammer same fingerprint every 15s
+    seen = state.setdefault("seen_fingerprints", {})
+    if isinstance(seen, list):
+        seen = {k: 0.0 for k in seen}
+        state["seen_fingerprints"] = seen
+    last = float(seen.get(fp) or 0)
+    if fp != "ok" and time.time() - last < 90.0:
         return
 
     log(LABEL, "Anomaly detected", fp[:200])
-
-    context_parts = []
-    if not evidence.get("port_alive"):
-        context_parts.append("DASHBOARD PORT NOT RESPONDING")
-    trader_info = evidence.get("stack_status", {}).get("trader", {})
-    if trader_info.get("status") == "offline":
-        context_parts.append("TRADER OFFLINE")
-    elif trader_info.get("status") == "duplicate":
-        context_parts.append(f"DUPLICATE TRADERS: count={trader_info.get('count',0)}")
-    if evidence.get("recent_errors"):
-        context_parts.append(f"\nRECENT ERRORS ({evidence['error_count']}):")
-        for e in evidence["recent_errors"]:
-            context_parts.append(f"  [{e['title']}] {e['detail']}")
-    if evidence.get("trader_log_tail"):
-        context_parts.append(f"\nTRADER LOG TAIL:\n{evidence['trader_log_tail']}")
-    if evidence.get("recent_activity"):
-        context_parts.append("\nRECENT ACTIVITY:")
-        for e in evidence["recent_activity"][-5:]:
-            context_parts.append(f"  [{e['type']}] {e['title']}: {e['detail']}")
-
-    user_msg = "\n".join(context_parts)
-    if len(user_msg) > 4000:
-        user_msg = user_msg[:4000]
-
     state["repairs_attempted"] += 1
-    answer = llm_ask(AGENT_NAME, llm, SYSTEM, user_msg, max_tokens=1200)
 
-    if not answer:
-        log_warn(LABEL, "LLM unavailable, running script repair")
-        killed = kill_duplicate_traders()
-        if killed:
-            log(LABEL, "Script repair", f"killed {killed} duplicates")
+    # Step 2: if reconcile alone fixed it, verify and exit
+    evidence_after = _gather_evidence()
+    if _fingerprint(evidence_after) == "ok" and reconcile.get("ok"):
+        state["repairs_succeeded"] += 1
+        seen[fp] = time.time()
+        log(LABEL, "Fixed by reconcile", "; ".join(reconcile.get("actions") or [])[:200])
         return
 
-    try:
-        plan = json.loads(answer)
-    except (json.JSONDecodeError, ValueError):
-        stripped = answer.strip()
-        if stripped.startswith("```"):
-            stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
-            if stripped.endswith("```"):
-                stripped = stripped[:-3]
-        plan = json.loads(stripped.strip())
+    # Step 3: full repair engine (deterministic playbook + LLM triage)
+    incident = _build_incident(evidence, reconcile)
+    incident["technician_method"] = TECHNICIAN_METHOD
+    result = triage_with_repair_engine(client, llm, state, incident, label=LABEL)
 
-    diagnosis = plan.get("diagnosis", "")
-    confidence = plan.get("confidence", 0)
-    fixed = plan.get("fixed", False)
-    actions = plan.get("actions_taken", [])
-    needs_human = plan.get("needs_human", False)
-
-    for action in actions:
-        _execute_action(action, client)
-
-    if fixed:
+    if result and (result.recovered or result.actions_taken):
         state["repairs_succeeded"] += 1
-        state.setdefault("seen_fingerprints", []).append(fp)
-        state["seen_fingerprints"] = state["seen_fingerprints"][-50]
-
-    log(LABEL, f"Diagnosis (conf={confidence})", f"fixed={fixed} needs_human={needs_human} | {diagnosis}")
-    if needs_human:
-        log_warn(LABEL, "HUMAN INTERVENTION NEEDED", diagnosis)
-
-
-def _execute_action(action: str, client) -> None:
-    """Execute a repair action string from the LLM."""
-    action_lower = action.lower()
-    if "kill" in action_lower and "duplicate" in action_lower:
-        n = kill_duplicate_traders()
-        log(LABEL, "Action", f"killed {n} duplicate processes")
-    elif "restart" in action_lower and "trader" in action_lower:
-        from trader.stack_control import start_single_trader
-        result = start_single_trader()
-        log(LABEL, "Action", f"restart trader: {result}")
-    elif "hold" in action_lower or "wait" in action_lower:
-        log(LABEL, "Action", f"holding: {action[:100]}")
+        seen[fp] = time.time()
+        log(
+            LABEL,
+            "Repair complete",
+            f"recovered={result.recovered} actions={'; '.join(result.actions_taken)[:200]}",
+        )
     else:
-        log(LABEL, "Action", f"recorded: {action[:100]}")
+        log_warn(LABEL, "Repair incomplete", fp[:200])
 
 
 if __name__ == "__main__":

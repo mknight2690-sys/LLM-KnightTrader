@@ -3,217 +3,917 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLM KnightTrader — Cursor + OpenRouter Setup Tutorial</title>
+<title>LLM KnightTrader — Full Beginner Tutorial</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; display: flex; justify-content: center; min-height: 100vh; margin: 0; padding: 40px 20px; }
-  .container { max-width: 700px; width: 100%; }
-  h1 { color: #58a6ff; font-size: 24px; margin-bottom: 8px; }
-  .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 32px; }
+  * { box-sizing: border-box; }
+  html { overflow-x: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; margin: 0; padding: 40px 20px; }
+  .container { max-width: 720px; width: 100%; margin: 0 auto; overflow-x: hidden; }
+  h1 { color: #58a6ff; font-size: 26px; margin-bottom: 4px; }
+  .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 32px; line-height: 1.5; }
   .step { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 20px 24px; margin-bottom: 16px; }
-  .step-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-  .step-num { background: #238636; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
-  .step-title { font-size: 16px; font-weight: 600; color: #f0f6fc; }
-  .step-content { font-size: 14px; line-height: 1.7; color: #c9d1d9; }
-  .step-content code { background: #1c2128; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #79c0ff; }
-  .step-content pre { background: #1c2128; border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 12px 0; }
-  .step-content pre code { background: none; padding: 0; color: #c9d1d9; }
-  .copy-btn { background: #238636; color: white; border: none; border-radius: 6px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 20px; }
-  .copy-btn:hover { background: #2ea043; }
-  .copied { background: #1f6feb !important; }
-  .note { background: #1c2128; border-left: 3px solid #d29922; padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 12px 0; font-size: 13px; color: #e3b341; }
-  .warn { background: #1c2128; border-left: 3px solid #f85149; padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 12px 0; font-size: 13px; color: #f85149; }
+  .step-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .step-num { background: #238636; color: white; min-width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; margin-top: 2px; }
+  .step-title { font-size: 17px; font-weight: 600; color: #f0f6fc; line-height: 1.4; }
+  .step-content { font-size: 14px; line-height: 1.75; color: #c9d1d9; }
+  .step-content p { margin: 8px 0; }
+  .step-content ol, .step-content ul { margin: 8px 0; padding-left: 24px; }
+  .step-content li { margin: 6px 0; }
+  .step-content code { background: #1c2128; padding: 2px 7px; border-radius: 4px; font-size: 13px; color: #79c0ff; }
+  .step-content pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; margin: 14px 0; }
+  .step-content pre code { background: none; padding: 0; color: #c9d1d9; font-size: 13px; }
+  .step-content strong { color: #f0f6fc; }
+  .note { background: rgba(210,153,34,0.1); border-left: 3px solid #d29922; padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 14px 0; font-size: 13px; }
+  .note strong { color: #e3b341; }
+  .warn { background: rgba(248,81,73,0.1); border-left: 3px solid #f85149; padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 14px 0; font-size: 13px; }
+  .warn strong { color: #f85149; }
+  .tip { background: rgba(88,166,255,0.1); border-left: 3px solid #58a6ff; padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 14px 0; font-size: 13px; }
+  .tip strong { color: #58a6ff; }
   a { color: #58a6ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .footer { margin-top: 32px; font-size: 12px; color: #484f58; text-align: center; }
+  .url-highlight { color: #58a6ff; font-weight: 600; }
+  .copy-section { background: #161b22; border: 2px solid #238636; border-radius: 10px; padding: 24px; margin-top: 24px; text-align: center; }
+  .copy-section p { margin-bottom: 16px; color: #8b949e; font-size: 13px; }
+  .copy-btn { background: #238636; color: white; border: none; border-radius: 8px; padding: 14px 28px; font-size: 16px; font-weight: 600; cursor: pointer; }
+  .copy-btn:hover { background: #2ea043; }
+  .copied { background: #1f6feb !important; }
+  .footer { margin-top: 32px; font-size: 12px; color: #484f58; text-align: center; line-height: 1.6; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>🚀 Cursor + OpenRouter Setup for LLM KnightTrader</h1>
-  <p class="subtitle">Free setup with Owl Alpha model — get running in ~5 minutes</p>
+  <h1>� LLM KnightTrader — Complete Beginner Tutorial</h1>
+  <p class="subtitle">Zero crypto experience needed. Follow each step in order.<br>Total time: ~15 minutes. Cost: $0 (everything uses free tiers).</p>
 
+  <!-- STEP 0: Requirements + Do you need VPN? -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">📋</div>
+      <div class="step-title">What You Need Before Starting</div>
+    </div>
+    <div class="step-content">
+      <ul>
+        <li>A Windows 10/11 or macOS computer</li>
+        <li>An internet connection</li>
+        <li>A web browser (Chrome, Firefox, Edge)</li>
+        <li>An email account (for signing up to services)</li>
+        <li>Your <strong>physical ID card</strong> or passport (needed later for verification)</li>
+      </ul>
+      <div class="warn"><strong>⚠️ CHECK THIS FIRST — Do you need ProtonVPN?</strong>
+        <p>BloFin (the crypto exchange) does <strong>not</strong> allow users from these countries:</p>
+        <p style="margin:8px 0">
+          <strong>USA, Canada, Singapore, China, Iran, Iraq, North Korea, Cuba, Russia, Belarus,
+          Myanmar, Haiti, Trinidad and Tobago, Guinea, Guinea-Bissau, Mali, Sierra Leone, Somalia,
+          South Sudan, Sudan, Syria, Yemen, Zimbabwe, Libya, Liberia, Lebanon, Eritrea,
+          Central African Republic, DRC, Burundi, Rwanda, Donetsk, Luhansk, Sevastopol,
+          Marshall Islands, Venezuela</strong>
+        </p>
+        <ul>
+          <li><strong>If you live in any of those countries</strong> → You <strong>MUST</strong> use ProtonVPN. Continue to Step 1.</li>
+          <li><strong>If you live anywhere else</strong> → You don't need VPN. <strong>Skip to Step 4</strong> (BloFin signup).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 1: ProtonVPN Signup -->
   <div class="step">
     <div class="step-header">
       <div class="step-num">1</div>
-      <div class="step-title">Install Cursor</div>
+      <div class="step-title">Sign Up for ProtonVPN (Free)</div>
     </div>
     <div class="step-content">
-      <p>Download and install Cursor (free):</p>
-      <pre><code>Go to: cursor.com/download
-Windows: run the .exe installer
-Mac: drag .dmg to Applications</code></pre>
-      <p>Open Cursor and sign in with your free Cursor account.</p>
+      <p><strong>Only if your country is blocked.</strong> Otherwise <a href="#step-4">skip to Step 4</a>.</p>
+      <p><strong>Why?</strong> BloFin blocks some countries. ProtonVPN makes it look like you're in an allowed country.</p>
+      <ol>
+        <li>Open your browser and go to: <a href="https://protonvpn.com/free-vpn" target="_blank" class="url-highlight">protonvpn.com/free-vpn</a></li>
+        <li>Click the big green button that says <strong>"Get Proton VPN Free"</strong></li>
+        <li>On the next page, enter any email address you use</li>
+        <li>Click <strong>"Continue"</strong></li>
+        <li>Set a password (create a new one, save it somewhere safe)</li>
+        <li>Click <strong>"Create Account"</strong></li>
+        <li>Check your email — Proton will send a verification code</li>
+        <li>Enter the verification code on the website</li>
+        <li>You're now signed up! You'll see a download page</li>
+      </ol>
+      <div class="tip"><strong>Save your ProtonVPN username and password</strong> in a text file — you'll need them to connect the VPN app later.</div>
     </div>
   </div>
 
+  <!-- STEP 2: Install ProtonVPN + Connect -->
   <div class="step">
     <div class="step-header">
       <div class="step-num">2</div>
-      <div class="step-title">Get OpenRouter API Key (Free)</div>
+      <div class="step-title">Install ProtonVPN App & Connect to Allowed Country</div>
     </div>
     <div class="step-content">
-      <p>1. Go to <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a></p>
-      <p>2. Sign up / log in</p>
-      <p>3. Click "Create Key" — copy the key (starts with <code>sk-or-...</code>)</p>
-      <div class="note">Free tier gives you up to 1,000 requests/day with Owl Alpha. No credit card needed.</div>
+      <ol>
+        <li>On the ProtonVPN download page, click <strong>"Download for Windows"</strong> (or "Download for Mac")</li>
+        <li>Run the installer and follow the prompts (defaults are fine, click "Next" until done)</li>
+        <li>Open the ProtonVPN app when installation finishes</li>
+        <li>Sign in with the email and password you just created</li>
+        <li>Click <strong>"Quick Connect"</strong> — this connects you to the fastest free server</li>
+        <li>Wait for the status to show <strong>"Connected"</strong> (green)</li>
+        <li><strong>Check which country you landed on.</strong> If it's one of these, you're good — skip to step 10:
+          <ul>
+            <li>✅ Netherlands, ✅ Switzerland, ✅ Poland, ✅ Romania, ✅ Norway, ✅ Japan</li>
+          </ul>
+        </li>
+        <li><strong>If you landed on a BLOCKED country</strong> (USA, Canada, Singapore, etc.), you need to switch:</li>
+      </ol>
+      <div class="warn" style="margin:14px 0;">
+        <strong>🕒 SERVER-SWITCHING PROCEDURE (follow exactly):</strong>
+        <ol style="margin-top:8px;">
+          <li><strong>ATTEMPT 1:</strong> After your first "Connect", watch the on-screen timer/counter. Wait until it reaches <strong>1 minute 30 seconds</strong> (1:30). Then click <strong>"Change Server"</strong></li>
+          <li><strong>Check the country.</strong> If it's Netherlands, Switzerland, Poland, Romania, Norway, or Japan → you're done! Skip to step 10.</li>
+          <li><strong>ATTEMPT 2:</strong> If still on a blocked country, wait until the counter reaches <strong>1 minute 40 seconds</strong> (1:40) from your initial connect. Then click <strong>"Change Server"</strong> again</li>
+          <li><strong>Check the country.</strong> If it's an allowed country → done! Skip to step 10.</li>
+          <li><strong>ATTEMPT 3:</strong> If still blocked, wait until the counter reaches <strong>1 minute 50 seconds</strong> (1:50) from your initial connect. Then click <strong>"Change Server"</strong> one more time</li>
+          <li><strong>Check the country.</strong> By the 3rd attempt you should land on an allowed country.</li>
+        </ol>
+        <p style="margin-top:8px;"><strong>What counter?</strong> The ProtonVPN app shows a connection duration timer on the home screen (e.g. "0:42"). That's what you watch. You're timing from when you first hit <em>Connect</em>.</p>
+      </div>
+      <ol start="10">
+        <li>Confirm your country is one of: <strong>Netherlands, Switzerland, Poland, Romania, Norway, or Japan</strong></li>
+      </ol>
+      <div class="warn"><strong>DO NOT stay on these countries</strong> — they are on BloFin's blocked list:<br>❌ United States, ❌ Canada, ❌ Singapore</div>
+      <div class="note"><strong>Leave ProtonVPN open and connected</strong> the entire time you use LLM KnightTrader. If you disconnect, BloFin will block you.</div>
     </div>
   </div>
 
-  <div class="step">
+  <!-- STEP 3: OpenRouter API Key -->
+  <div class="step" id="step-3or4">
     <div class="step-header">
       <div class="step-num">3</div>
-      <div class="step-title">Configure Cursor for OpenRouter (Custom Base URL)</div>
+      <div class="step-title">Get OpenRouter API Key (Free AI)</div>
     </div>
     <div class="step-content">
-      <p>In Cursor, open Settings:</p>
-      <pre><code>Windows: Ctrl + Shift + J
-Mac: Cmd + Shift + J</code></pre>
-      <p>Navigate to <strong>Models</strong> section, then click the <strong>API Keys</strong> dropdown arrow:</p>
-      <p>Set these values:</p>
-      <pre><code>Base URL: https://openrouter.ai/api/v1
-API Key:  sk-or-your-key-here
-Model:   openrouter/owl-alpha</code></pre>
-      <div class="warn">If Cursor doesn't have a custom provider option in settings, you can set it via environment variables or MCP config. See note below.</div>
-      <p><strong>Alternative method</strong> — set environment variables before launching Cursor:</p>
-      <pre><code># Windows (PowerShell):
-$env:OPENAI_API_KEY = "sk-or-your-key-here"
-$env:OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
-
-# Mac/Linux:
-export OPENAI_API_KEY="sk-or-your-key-here"
-export OPENAI_BASE_URL="https://openrouter.ai/api/v1"</code></pre>
+      <p>LLM KnightTrader uses AI to make trading decisions. OpenRouter gives you free access to AI models.</p>
+      <ol>
+        <li>Go to: <a href="https://openrouter.ai/keys" target="_blank" class="url-highlight">openrouter.ai/keys</a></li>
+        <li>If you don't have an account: click <strong>"Sign Up"</strong> and create one with your email (free)</li>
+        <li>Once logged in, click <strong>"Create Key"</strong> (or "Add Key")</li>
+        <li>Name it anything (e.g. <code>KnightTrader</code>)</li>
+        <li>Click <strong>"Create"</strong></li>
+        <li><strong>Copy and save the API Key</strong> (starts with <code>sk-or-...</code>)</li>
+      </ol>
+      <div class="tip"><strong>Save this key</strong> in the same text file where you saved your ProtonVPN credentials. You'll need it later when setting up Cursor.</div>
     </div>
   </div>
 
-  <div class="step">
+  <!-- STEP 4: BloFin Signup -->
+  <div class="step" id="step-4">
     <div class="step-header">
       <div class="step-num">4</div>
-      <div class="step-title">Enable "Run Everything" Mode (Auto-Run)</div>
+      <div class="step-title">Sign Up for BloFin (The Crypto Exchange)</div>
     </div>
     <div class="step-content">
-      <p>This lets Cursor work autonomously without asking you to click "Run" every time:</p>
-      <pre><code>1. Open Cursor Settings (Ctrl/Cmd + Shift + J)
-2. Go to Agents → Approvals & Execution
-3. Find "Auto-Run" mode
-4. Select "Run Everything"</code></pre>
-      <div class="note">⚠️ "Run Everything" lets the agent execute any terminal command without approval. Only use in trusted environments. Cursor creates checkpoints before changes so you can roll back if needed.</div>
-      <p>Now Cursor will run commands, install packages, and execute scripts automatically — no manual approval needed.</p>
+      <p><strong>Make sure ProtonVPN is connected first!</strong> (If you're using it.) Your VPN must keep running for all remaining steps.</p>
+      <ol>
+        <li>Go to: <a href="https://blofin.com" target="_blank" class="url-highlight">blofin.com</a></li>
+        <li>Click <strong>"Sign Up"</strong> (top-right corner of the page)</li>
+        <li>Enter your email address (can be the same as ProtonVPN or a different one)</li>
+        <li>Create a password</li>
+        <li>Check your phone/email for a <strong>6-digit verification code</strong> from BloFin</li>
+        <li>Enter the code in the verification field (you have 5 minutes)</li>
+        <li>Click <strong>"Confirm"</strong></li>
+        <li>You're now signed up!</li>
+      </ol>
+      <div class="tip"><strong>If BloFin shows an error about your country:</strong> disconnect ProtonVPN and reconnect to a different allowed country (try Netherlands first), then refresh the BloFin page.</div>
     </div>
   </div>
 
+  <!-- STEP 5: BloFin KYC -->
   <div class="step">
     <div class="step-header">
       <div class="step-num">5</div>
-      <div class="step-title">Clone and Run LLM KnightTrader</div>
+      <div class="step-title">Verify Your Identity (KYC)</div>
     </div>
     <div class="step-content">
-      <p>Open a terminal in Cursor and run:</p>
-      <pre><code>git clone https://github.com/1bananaonthewall-ux/llm-knighttrader.git
-cd llm-knighttrader
-python -m venv .venv
-
-# Windows:
-.venv\Scripts\activate
-
-# Mac/Linux:
-source .venv/bin/activate
-
-pip install -r requirements.txt</code></pre>
-      <p>Then paste this prompt into Cursor chat:</p>
-      <pre><code>Read ReadMe.tx in full, then set up this project.
-Ask me for my BloFin API keys and OpenRouter key in chat.
-Use OpenRouter with base URL https://openrouter.ai/api/v1 and model openrouter/owl-alpha.
-After setup, verify end-to-end, then STOP the stack.
-Enable auto-run so you don't need my approval for commands.</code></pre>
-      <p>Cursor will ask for your keys, then handle everything automatically — install, configure, verify, and stop.</p>
+      <p>BloFin requires identity verification before you can create API keys or trade.</p>
+      <p><strong>Make sure ProtonVPN is connected first (if using one).</strong></p>
+      <ol>
+        <li>On the BloFin website, click your <strong>profile icon</strong> (top-right corner)</li>
+        <li>Click <strong>"Identification"</strong> or <strong>"Verify Identity"</strong></li>
+        <li>Where it says <strong>"Enter real name"</strong>, type your <strong>legal first and last name</strong> exactly as it appears on your ID card</li>
+        <li>Select <strong>ID Type: "ID Card"</strong> (or "Passport" if that's what you have)</li>
+        <li>Enter your <strong>ID Card number</strong> (the number printed on your physical ID card)</li>
+        <li>Select the <strong>Date of issue</strong> of your ID card from the calendar</li>
+        <li>Select the <strong>Date of expiry</strong> of your ID card from the calendar</li>
+        <li>Click <strong>"Next"</strong></li>
+        <li>If prompted for <strong>face verification</strong>: follow on-screen instructions (you'll use your phone's camera)</li>
+        <li>When the form is complete, click <strong>"Done"</strong> and wait for verification (usually takes a few minutes, sometimes up to 24 hours)</li>
+      </ol>
+      <div class="tip"><strong>Your name, ID number, date of issue, and date of expiry must exactly match your physical ID card.</strong> Even small typos will cause verification to fail.</div>
     </div>
   </div>
 
+  <!-- STEP 6: BloFin API Keys -->
   <div class="step">
     <div class="step-header">
       <div class="step-num">6</div>
-      <div class="step-title">Daily Use</div>
+      <div class="step-title">Create BloFin API Keys</div>
     </div>
     <div class="step-content">
-      <p>After setup, you'll have desktop shortcuts:</p>
-      <pre><code>Start LLM KnightTrader.lnk  → kills old instances, starts fresh
-Stop LLM KnightTrader.lnk   → stops everything</code></pre>
-      <p>Or from command line:</p>
-      <pre><code>python scripts/stack_launcher.py start
-python scripts/stack_launcher.py stop</code></pre>
-      <p>Dashboard: <code>http://127.0.0.1:8765</code></p>
+      <p>LLM KnightTrader needs API keys to connect to BloFin and place trades.</p>
+      <p><strong>Make sure ProtonVPN is connected first (if using one).</strong></p>
+      <ol>
+        <li>Go to: <a href="https://blofin.com/account/apis" target="_blank" class="url-highlight">blofin.com/account/apis</a>
+          <ul><li>If that link doesn't work: go to blofin.com → click your profile icon (top-right) → click <strong>"API"</strong></li></ul>
+        </li>
+        <li>Click <strong>"Create API Key"</strong></li>
+        <li>Fill in the form:
+          <ul>
+            <li><strong>API Key Name:</strong> type anything, e.g. <code>MyBot</code></li>
+            <li><strong>Description:</strong> optional, leave blank or write "trading bot"</li>
+            <li><strong>Permissions:</strong> check <em>only</em> <strong>"Trade"</strong>. <strong style="color:#f85149;">NEVER enable "Withdraw".</strong></li>
+            <li><strong>Passphrase:</strong> create a new password just for this API key — save it in your text file</li>
+          </ul>
+        </li>
+        <li>Click <strong>"Confirm"</strong></li>
+        <li>If prompted for 2FA, enter the code from your authenticator app or SMS/email</li>
+        <li><strong>⚠️ IMMEDIATELY copy and save all THREE of these:</strong>
+          <ul>
+            <li><strong>API Key</strong> (looks like: <code>abc123def456...</code>)</li>
+            <li><strong>Secret Key</strong> (looks like: <code>xyz789...</code>) — <strong>only shown ONCE!</strong></li>
+            <li><strong>Passphrase</strong> (the password you just created for this API key)</li>
+          </ul>
+        </li>
+      </ol>
+      <div class="warn"><strong>IMPORTANT:</strong> The Secret Key is only shown ONCE on this page. Copy it immediately. If you close this page without saving it, you'll need to delete the key and create a new one.</div>
     </div>
   </div>
 
-  <button class="copy-btn" onclick="copyAll()">📋 Copy Full Tutorial</button>
+  <!-- STEP 7: Fund Your BloFin Account (Buy Crypto) -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">7</div>
+      <div class="step-title">Fund Your BloFin Account — Buy USDT</div>
+    </div>
+    <div class="step-content">
+      <p>LLM KnightTrader trades <strong>USDT-margined futures</strong>, so you need <strong>USDT</strong> (Tether) on BloFin to get started. USDT is a "stablecoin" — 1 USDT = 1 USD.</p>
+      <p><strong>Make sure ProtonVPN is connected first (if using one).</strong></p>
+      <p>There are several ways to get USDT. Pick <strong>one</strong> of the options below:</p>
+
+      <p><strong>━━━ OPTION A: Buy directly on BloFin (Easiest — stays in one place) ━━━</strong></p>
+      <p>BloFin has a built-in "Buy Crypto" feature that accepts credit cards, debit cards, Apple Pay, and Google Pay through their payment partners (Simplex, Alchemy Pay, Checkout.com).</p>
+      <ol>
+        <li>Log in to your BloFin account</li>
+        <li>Hover over <strong>"Assets"</strong> in the top navigation bar</li>
+        <li>Click <strong>"Overview"</strong> → then click the <strong>"Buy Crypto"</strong> button</li>
+        <li><strong>Spend currency:</strong> select your local currency (USD, EUR, etc.)</li>
+        <li><strong>Receive currency:</strong> select <strong>USDT</strong></li>
+        <li>Enter the amount you want to spend (minimum ~$15)</li>
+        <li><strong>Payment method:</strong> choose <strong>"Card"</strong> (credit/debit) or <strong>"Apple Pay" / "Google Pay"</strong></li>
+        <li>Click <strong>"Buy Now"</strong></li>
+        <li>Review the order details, check the box, click <strong>"Pay"</strong></li>
+        <li>You'll be redirected to their payment partner to enter your card details and verify your identity</li>
+        <li>Once complete, your USDT arrives in your BloFin <strong>Funding Account</strong> (usually within minutes)</li>
+      </ol>
+      <div class="tip"><strong>Fees:</strong> Expect ~2-4% in fees when buying by card. It's the fastest way but costs slightly more. If your card is declined, try Apple Pay or Google Pay instead.</div>
+
+      <p><strong>━━━ OPTION B: Cash App → BloFin (Good for US users) ━━━</strong></p>
+      <p>Cash App lets you buy Bitcoin instantly with a linked debit card, then send it anywhere.</p>
+      <ol>
+        <li>Download <strong>Cash App</strong> from the App Store or Google Play</li>
+        <li>Create an account and link your <strong>debit card</strong></li>
+        <li>Complete identity verification (they'll ask for your name, date of birth, and last 4 digits of SSN)</li>
+        <li>Tap the <strong>"Bitcoin"</strong> tab on the home screen</li>
+        <li>Tap <strong>"Buy Bitcoin"</strong> → enter the amount in USD (e.g. $50)</li>
+        <li>Tap <strong>"Buy Now"</strong> and confirm with your PIN/fingerprint</li>
+        <li><strong>Leave the Bitcoin in Cash App for now</strong> — you'll send it to BloFin in the next step</li>
+        <li><em>Why not buy USDT directly?</em> Cash App only supports Bitcoin. You'll convert it to USDT on BloFin after.</li>
+      </ol>
+
+      <p><strong>━━━ OPTION C: Coinbase → BloFin (Good outside the US, lower fees) ━━━</strong></p>
+      <p>Coinbase is available in 100+ countries and lets you buy USDT directly with your local currency.</p>
+      <ol>
+        <li>Go to: <a href="https://coinbase.com" target="_blank" class="url-highlight">coinbase.com</a> and create an account</li>
+        <li>Complete identity verification (photo ID scan + selfie)</li>
+        <li>Click <strong>"Buy & Sell"</strong> at the top</li>
+        <li><strong>Buy:</strong> select <strong>USDT</strong> (Tether)</li>
+        <li>Enter your amount (e.g. $50 worth)</li>
+        <li><strong>Add a payment method:</strong> debit card (instant, ~3.99% fee), bank transfer (3-5 days, lower fee), or PayPal (US/UK only, ~2-3% fee)</li>
+        <li>Click <strong>"Buy Now"</strong></li>
+        <li>Your USDT is now in your Coinbase account — ready to send to BloFin</li>
+      </ol>
+
+      <p><strong>━━━ OPTION D: Kraken → BloFin (Good for EU/UK, lowest fees) ━━━</strong></p>
+      <p>Kraken has some of the lowest fees and supports SEPA bank transfers (free) in Europe.</p>
+      <ol>
+        <li>Go to: <a href="https://kraken.com" target="_blank" class="url-highlight">kraken.com</a> and create an account</li>
+        <li>Complete identity verification (photo ID)</li>
+        <li>Click <strong>"Buy Crypto"</strong> in the top navigation</li>
+        <li>Select <strong>USDT</strong></li>
+        <li>For EU users: select <strong>"Bank Transfer (SEPA)"</strong> for free deposits (arrives in 1-2 days)</li>
+        <li>For everyone else: debit card is instant (~3-4% fee)</li>
+        <li>Once your USDT arrives, you can send it to BloFin</li>
+      </ol>
+
+      <p><strong>━━━ OPTION E: PayPal → BloFin (Only if you already have a balance) ━━━</strong></p>
+      <p></p>
+      <ul>
+        <li><strong>US users:</strong> PayPal lets you buy crypto directly in the app. However, <strong style="color:#f85149;">you cannot send PayPal-purchased crypto to BloFin</strong> — it stays in your PayPal wallet.</li>
+        <li><strong>Workaround:</strong> Use PayPal to fund Coinbase or Kraken (select PayPal as payment method), buy USDT there, then send to BloFin.</li>
+        <li>Go to Coinbase or Kraken, add payment method, select <strong>"PayPal"</strong>, buy USDT.</li>
+      </ul>
+
+      <p><strong>━━━ NEXT: If you bought USDT on another exchange (Coinbase, Kraken, Cash App) — Send it to BloFin ━━━</strong></p>
+      <p>If you used <strong>Option A</strong> (bought directly on BloFin), your USDT is already there. <strong>Skip to Step 8.</strong></p>
+      <p>If you used <strong>Options B, C, or D</strong>, you need to send your USDT to BloFin. Follow these steps carefully:</p>
+      <ol>
+        <li><strong>On BloFin:</strong> log in → hover over <strong>"Assets"</strong> (top-right) → click <strong>"Deposit"</strong></li>
+        <li>Search for and select <strong>USDT</strong></li>
+        <li><strong>Choose the network:</strong> select <strong>"TRON (TRC20)"</strong>
+          <ul>
+            <li>✅ TRC20 is the fastest and cheapest (~$1 fee). Use this for Cash App and most exchanges.</li>
+            <li>✅ ERC20 (Ethereum) works too but costs $5-15 in gas fees.</li>
+            <li><strong style="color:#f85149;">⚠️ CRITICAL:</strong> If using Cash App, you're sending Bitcoin — select <strong>"Bitcoin"</strong> and <strong>"BTC"</strong> network instead of USDT/TRC20.</li>
+          </ul>
+        </li>
+        <li>Copy the <strong>deposit address</strong> (the long string of letters and numbers)</li>
+        <li><strong>On your other exchange/Cash App:</strong> go to <strong>"Withdraw"</strong> or <strong>"Send"</strong>
+          <ul>
+            <li>Cash App: tap Bitcoin → tap "Send" → paste the BloFin BTC deposit address → enter amount → send</li>
+            <li>Coinbase: click "Send/Receive" → "Send" → select USDT → paste address → select TRC20 network → send</li>
+            <li>Kraken: click "Withdraw" → select USDT → paste address → select TRON network → send</li>
+          </ul>
+        </li>
+        <li>⚠️ <strong style="color:#f85149;">DOUBLE-CHECK THE NETWORK:</strong> The network you select on BloFin (when copying the address) MUST match the network you select on the sending platform. If they don't match, your funds will be <strong>lost forever</strong>.</li>
+        <li>Wait for the deposit to arrive (usually 1-5 minutes for crypto, up to 24 hours for bank transfers)</li>
+        <li>On BloFin, check under <strong>Assets → Overview</strong> — your USDT balance should appear</li>
+      </ol>
+      <div class="warn"><strong>⚠️ CRITICAL: Understand "USDT-Margined Futures"</strong>
+        <p>LLM KnightTrader trades futures contracts that are <strong>settled in USDT</strong>, not in Bitcoin or dollars. This means:</p>
+        <ul>
+          <li>You need <strong>USDT on BloFin</strong> — not BTC, not ETH</li>
+          <li>Your profit and loss is measured in USDT</li>
+          <li>If you sent BTC from Cash App, you need to <strong>convert it to USDT on BloFin first</strong> (click "Trade" → "Spot" → trade BTC/USDT)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 8: Install Cursor -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">8</div>
+      <div class="step-title">Install Cursor (AI Code Assistant)</div>
+    </div>
+    </div>
+    <div class="step-content">
+      <p>Cursor is an AI-powered code editor that will set everything up for you automatically.</p>
+      <ol>
+        <li>Go to: <a href="https://cursor.com/download" target="_blank" class="url-highlight">cursor.com/download</a></li>
+        <li>Click <strong>"Download for Windows"</strong> (or "Download for Mac")</li>
+        <li>Run the downloaded installer file (double-click it)</li>
+        <li>Follow the install prompts (defaults are fine — click "Next" until done)</li>
+        <li>Open Cursor when installation finishes</li>
+        <li>Sign in with your Cursor account (create one if you don't have one — free tier works)</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- STEP 9: Configure Cursor for OpenRouter -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">9</div>
+      <div class="step-title">Configure Cursor to Use OpenRouter (Free AI Model)</div>
+    </div>
+    <div class="step-content">
+      <p>Tell Cursor to use OpenRouter's free Owl Alpha model instead of the default AI.</p>
+      <ol>
+        <li>In Cursor, open Settings by pressing <kbd>Ctrl + Shift + J</kbd> (Windows) or <kbd>Cmd + Shift + J</kbd> (Mac)</li>
+        <li>In the left sidebar, click <strong>"Models"</strong></li>
+        <li>Scroll down and find the <strong>"API Keys"</strong> section</li>
+        <li>Click the small <strong>dropdown arrow ▼</strong> next to "API Keys" to expand it</li>
+        <li>Fill in these two values exactly:</li>
+      </ol>
+      <pre><code>Base URL:    https://openrouter.ai/api/v1
+API Key:     sk-or-your-actual-key-here
+Model Name:  openrouter/owl-alpha</code></pre>
+      <div class="tip"><strong>If you can't find these fields:</strong> Look for an "OpenAI" section with a dropdown arrow, or a "Custom provider" option. The Base URL field might be labeled "Custom API Base".</div>
+    </div>
+  </div>
+
+  <!-- STEP 10: Enable Auto-Run -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">10</div>
+      <div class="step-title">Enable "Run Everything" Mode (So Cursor Works Autonomously)</div>
+    </div>
+    <div class="step-content">
+      <p>By default, Cursor stops and asks "Allow?" before running every command. This mode lets it work on its own without interrupting you.</p>
+      <ol>
+        <li>Open Settings again: press <kbd>Ctrl + Shift + J</kbd> (or <kbd>Cmd + Shift + J</kbd>)</li>
+        <li>Click <strong>"Agents"</strong> in the left sidebar</li>
+        <li>Scroll down to the section labeled <strong>"Approvals & Execution"</strong></li>
+        <li>Find <strong>"Auto-Run"</strong></li>
+        <li>Change the dropdown from "Ask Every Time" to <strong>"Run Everything"</strong></li>
+        <li>If a warning popup appears, click <strong>"Continue"</strong></li>
+      </ol>
+      <div class="warn"><strong>What this does:</strong> Cursor will now run terminal commands (installing packages, starting servers, etc.) without pausing to ask "Allow?" each time. It still shows you what it's doing in the chat window.</div>
+    </div>
+  </div>
+
+  <!-- STEP 11: Clone & Install -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">11</div>
+      <div class="step-title">Download LLM KnightTrader & Install Dependencies</div>
+    </div>
+    <div class="step-content">
+      <p>Now you'll download the project and install the Python packages it needs.</p>
+      <ol>
+        <li>In Cursor, open a terminal: press <kbd>Ctrl + `</kbd> (backtick key, below Esc)</li>
+        <li>Run these commands <strong>one at a time</strong> (copy each line, paste it in the terminal, press Enter):</li>
+      </ol>
+      <pre><code>git clone https://github.com/1bananaonthewall-ux/llm-knighttrader.git</code></pre>
+      <pre><code>cd llm-knighttrader</code></pre>
+      <pre><code>python -m venv .venv</code></pre>
+      <pre><code>.venv\Scripts\activate</code></pre>
+      <pre><code>pip install -r requirements.txt</code></pre>
+      <div class="note"><strong>If "python" is not found:</strong> try <code>python3</code> instead. If that also fails, install Python from <a href="https://python.org/downloads" target="_blank">python.org/downloads</a> (click the yellow "Download Python" button, then run the installer — make sure to check "Add Python to PATH" at the bottom of the installer).</div>
+      <ol start="3">
+        <li>After the install finishes, look at the bottom of Cursor — there's a chat panel. If you don't see it, press <kbd>Ctrl + L</kbd></li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- STEP 12: Prompt Cursor -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">12</div>
+      <div class="step-title">Tell Cursor to Set Up Everything</div>
+    </div>
+    <div class="step-content">
+      <p>Copy the entire block below and paste it into the Cursor chat at the bottom of the screen, then press Enter:</p>
+      <pre><code>Read the file ReadMe.tx in full, then follow it to set up this project.
+
+Ask me for these 4 things in chat when you need them:
+1. BloFin API Key
+2. BloFin Secret Key
+3. BloFin Passphrase
+4. OpenRouter API Key (starts with sk-or-...)
+
+Use these settings:
+- LLM: OpenRouter with base URL https://openrouter.ai/api/v1 and model openrouter/owl-alpha
+- KNIGHTTRADER_PYTHON: leave as default
+
+After setup is complete, verify everything works end-to-end
+(health check, stack status, dashboard loads), then STOP the stack completely.
+
+Do NOT skip creating the desktop Start/Stop shortcuts.</code></pre>
+      <ul>
+        <li>Press <strong>Enter</strong> to send</li>
+        <li>Cursor will reply asking for your API keys — paste each one when asked (the 4 things from your text file)</li>
+        <li>Cursor will automatically: install any missing dependencies, configure everything, create desktop shortcuts, start the stack, verify it works, then stop it</li>
+        <li>This takes <strong>2-5 minutes</strong></li>
+      </ul>
+      <div class="tip"><strong>Leave Cursor "Run Everything" mode ON</strong> while it works. If you accidentally changed it back, you'll have to click "Run" for every command — which this tutorial avoids by keeping auto-run enabled.</div>
+    </div>
+  </div>
+
+  <!-- STEP 13: Verify -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">13</div>
+      <div class="step-title">Verify Desktop Shortcuts Exist</div>
+    </div>
+    <div class="step-content">
+      <p>After Cursor finishes setup, the desktop shortcuts should be on your Desktop. Let's verify:</p>
+      <ol>
+        <li>Press <strong>Windows Key + D</strong> to show your desktop (minimizes all windows)</li>
+        <li>Look for these <strong>two icons</strong> on your desktop:
+          <ul>
+            <li><strong>Start LLM KnightTrader.lnk</strong> — double-click this to start trading</li>
+            <li><strong>Stop LLM KnightTrader.lnk</strong> — double-click this to stop trading</li>
+          </ul>
+        </li>
+        <li>If you also see them at: <code>C:\Users\YOUR_USERNAME\Desktop</code> — that's the same place (just a different way to view it)</li>
+      </ol>
+      <div class="warn"><strong>If shortcuts are missing:</strong> this can happen on first setup if Cursor skipped that step. To create them manually, open a terminal (in Cursor or PowerShell) and run:<br><code style="display:block;margin-top:8px;">powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create_desktop_shortcuts.ps1</code><br>Then check your Desktop again.</div>
+    </div>
+  </div>
+
+  <!-- Done! -->
+  <div class="step" style="border-color: #238636;">
+    <div class="step-header">
+      <div class="step-num" style="background:#238636;">✅</div>
+      <div class="step-title">You're Done! Daily Usage</div>
+    </div>
+    <div class="step-content">
+      <p><strong>TO START TRADING:</strong></p>
+      <ol>
+        <li>If you use ProtonVPN: make sure it's <strong>connected</strong> to an allowed country (Netherlands, Switzerland, Poland, Romania, Norway, or Japan)</li>
+        <li>Go to your Desktop</li>
+        <li>Double-click <strong>"Start LLM KnightTrader"</strong></li>
+        <li>Wait ~10 seconds for it to start</li>
+        <li>Your browser opens the dashboard at <a href="http://127.0.0.1:8765" target="_blank" class="url-highlight">http://127.0.0.1:8765</a></li>
+        <li>You should see <strong>"Trader online"</strong> with a green dot</li>
+      </ol>
+      <p><strong>TO STOP TRADING:</strong></p>
+      <ol>
+        <li>Double-click <strong>"Stop LLM KnightTrader"</strong> on your Desktop</li>
+        <li>Wait for it to confirm everything stopped</li>
+        <li>You can disconnect ProtonVPN if you want</li>
+      </ol>
+      <div class="tip"><strong>One instance guaranteed:</strong> Every time you double-click Start, it kills any old processes and starts fresh — one dashboard + one trader, no duplicates.</div>
+    </div>
+  </div>
+
+  <!-- Troubleshooting -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">❓</div>
+      <div class="step-title">Troubleshooting</div>
+    </div>
+    <div class="step-content">
+      <p><strong>"403 Forbidden" or "geo-restricted" error from BloFin:</strong></p>
+      <ul><li>Your ProtonVPN is either not connected or connected to a blocked country. Reconnect to Netherlands or Switzerland and try again.</li></ul>
+      <p><strong>BloFin signup says "country not allowed":</strong></p>
+      <ul><li>Connect to ProtonVPN first (Netherlands recommended), then refresh BloFin.</li></ul>
+      <p><strong>"No module named 'trader'" error:</strong></p>
+      <ul><li>You didn't activate the virtual environment. In your terminal, run: <code>.venv\Scripts\activate</code> then retry.</li></ul>
+      <p><strong>"Trader offline" in dashboard after starting:</strong></p>
+      <ul><li>Wait 10 more seconds — the trader takes a moment to connect. If still offline after 30s, check the error log at <code>data\logs\trader.err</code> (if the file exists).</li></ul>
+      <p><strong>"ModuleNotFoundError" during pip install:</strong></p>
+      <ul><li>You need Python 3.12 or newer. Download from <a href="https://python.org" target="_blank">python.org</a> and reinstall (check "Add Python to PATH" in the installer).</li></ul>
+      <p><strong>Desktop shortcuts not appearing:</strong></p>
+      <ul><li>In Cursor's terminal, run: <code>powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create_desktop_shortcuts.ps1</code></li></ul>
+    </div>
+  </div>
+
+  <div class="copy-section">
+    <p>Click below to copy this entire tutorial to your clipboard, then paste into Cursor or save for later:</p>
+    <button class="copy-btn" onclick="copyAll()">📋 Copy Full Tutorial</button>
+  </div>
 
   <div class="footer">
-    LLM KnightTrader — autonomous AI crypto trading<br>
-    github.com/1bananaonthewall-ux/llm-knighttrader
+    LLM KnightTrader — AI-powered autonomous crypto trading<br>
+    <a href="https://github.com/1bananaonthewall-ux/llm-knighttrader" target="_blank">github.com/1bananaonthewall-ux/llm-knighttrader</a>
   </div>
 </div>
 
 <script>
 function copyAll() {
-  const text = `🚀 Cursor + OpenRouter Setup for LLM KnightTrader
-Free setup with Owl Alpha model — get running in ~5 minutes
+  const text = `🚀 LLM KnightTrader — Complete Beginner Tutorial
+Zero crypto experience needed. Follow each step in order.
+Total time: ~15 minutes. Cost: $0 (free tiers only).
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. INSTALL CURSOR (free)
-   • Go to cursor.com/download
-   • Windows: run the .exe installer
-   • Mac: drag .dmg to Applications
-   • Open Cursor and sign in
+📋 WHAT YOU NEED BEFORE STARTING
+• A Windows 10/11 or macOS computer
+• Internet connection
+• Web browser (Chrome, Firefox, Edge)
+• Email account
+• Physical ID card or passport
 
-2. GET OPENROUTER API KEY (free)
-   • Go to openrouter.ai/keys
-   • Sign up / log in
-   • Create Key → copy (starts with sk-or-...)
-   • Free tier: 1,000 req/day, no credit card
+⚠️  CHECK IF YOU NEED PROTONVPN:
+BloFin (crypto exchange) blocks users from:
+USA, Canada, Singapore, China, Iran, Iraq, North Korea,
+Cuba, Russia, Belarus, Myanmar, Haiti, Trinidad/Tobago,
+Guinea, Guinea-Bissau, Mali, Sierra Leone, Somalia,
+South Sudan, Sudan, Syria, Yemen, Zimbabwe, Libya,
+Liberia, Lebanon, Eritrea, Central African Republic,
+DRC, Burundi, Rwanda, Donetsk, Luhansk, Sevastopol,
+Marshall Islands, Venezuela.
 
-3. CONFIGURE CURSOR FOR OPENROUTER
-   • Open Cursor Settings: Ctrl/Cmd + Shift + J
-   • Go to Models section
-   • Click the API Keys dropdown arrow
-   • Add custom provider / model:
-     Base URL: https://openrouter.ai/api/v1
-     API Key:  sk-or-your-key-here
-     Model:   openrouter/owl-alpha
-   • Alternative: set env vars before launching Cursor:
-     OPENAI_API_KEY=sk-or-your-key
-     OPENAI_BASE_URL=https://openrouter.ai/api/v1
+→ If you live in ANY of those: you MUST use ProtonVPN.
+  Continue to Step 1.
+→ If you live anywhere else: skip to Step 4 (BloFin).
+  You don't need VPN.
 
-4. ENABLE "RUN EVERYTHING" MODE
-   • Cursor Settings → Agents → Approvals & Execution
-   • Auto-Run mode → select "Run Everything"
-   • Now Cursor runs commands without asking permission
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — SIGN UP FOR PROTONVPN (FREE)
+(Only if your country is blocked. Otherwise skip to Step 4.)
 
-5. CLONE & RUN LLM KNIGHTTRADER
-   In Cursor terminal:
-   git clone https://github.com/1bananaonthewall-ux/llm-knighttrader.git
-   cd llm-knighttrader
-   python -m venv .venv
-   .venv\\Scripts\\activate  (or source .venv/bin/activate)
-   pip install -r requirements.txt
+Why? ProtonVPN makes it look like you're in an allowed country.
 
-   Then paste this prompt:
-   "Read ReadMe.tx in full, then set up this project.
-   Ask me for my BloFin API keys and OpenRouter key in chat.
-   Use OpenRouter with base URL https://openrouter.ai/api/v1 and model openrouter/owl-alpha.
-   After setup, verify end-to-end, then STOP the stack.
-   Enable auto-run so you don't need my approval for commands."
+1. Go to: protonvpn.com/free-vpn
+2. Click "Get Proton VPN Free" (big green button)
+3. Enter any email address
+4. Click "Continue"
+5. Set a password (save it somewhere safe)
+6. Click "Create Account"
+7. Check your email for a verification code from Proton
+8. Enter the verification code on the website
+9. Done! You'll see a download page.
 
-6. DAILY USE
-   Desktop shortcuts: Start / Stop LLM KnightTrader
-   Or: python scripts/stack_launcher.py start
-   Dashboard: http://127.0.0.1:8765`;
+� Save your ProtonVPN username and password — you'll need them later.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2 — INSTALL PROTONVPN + CONNECT
+
+1. Click "Download for Windows" (or Mac) on the download page
+2. Run the installer, follow prompts
+3. Open the ProtonVPN app
+4. Sign in with your email and password
+5. Click "Quick Connect" — connects to the fastest free server
+6. Wait for "Connected" (green)
+7. CHECK which country you landed on.
+   ✅ If Netherlands, Switzerland, Poland, Romania, Norway, or Japan → done!
+   ❌ If USA, Canada, Singapore, or other blocked country → switch:
+
+   🕒 SERVER-SWITCHING PROCEDURE (follow exactly):
+   The ProtonVPN app shows a connection duration timer on the home screen
+   (e.g. "0:42"). That's what you watch. Time from when you first hit Connect.
+
+   ATTEMPT 1: Watch the timer. When it reaches 1:30 (1 min 30 sec),
+     click "Change Server". Check country. If allowed → done!
+   ATTEMPT 2: If still blocked, wait till timer hits 1:40 (1 min 40 sec),
+     click "Change Server". Check country. If allowed → done!
+   ATTEMPT 3: If still blocked, wait till timer hits 1:50 (1 min 50 sec),
+     click "Change Server" again. By 3rd attempt you should land on
+     an allowed country.
+
+8. Confirm your country is one of: Netherlands, Switzerland, Poland,
+   Romania, Norway, or Japan
+
+⚠️  DO NOT stay on these (blocked by BloFin):
+   ❌ USA, ❌ Canada, ❌ Singapore
+
+📌 Leave ProtonVPN connected the entire time you use LLM KnightTrader.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3 — GET OPENROUTER API KEY (FREE AI)
+
+1. Go to: openrouter.ai/keys
+2. If no account: click "Sign Up" and create one (free)
+3. Once logged in, click "Create Key"
+4. Name it anything (e.g. KnightTrader)
+5. Click "Create"
+6. Copy and save the API Key (starts with sk-or-...)
+
+� Save this key — you'll need it when setting up Cursor.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 4 — SIGN UP FOR BLOFIN (CRYPTO EXCHANGE)
+⚠️  Make sure ProtonVPN is connected first (if using one)!
+
+1. Go to: blofin.com
+2. Click "Sign Up" (top-right)
+3. Enter your email address
+4. Create a password
+5. Check your email/phone for a 6-digit verification code
+6. Enter the code
+7. Click "Confirm"
+8. You're signed up!
+
+💡 If BloFin says "country not allowed": connect to ProtonVPN
+   (Netherlands) first, then refresh BloFin.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 5 — VERIFY YOUR IDENTITY (KYC)
+⚠️  ProtonVPN connected? Keep it that way.
+
+1. On BloFin, click your profile icon (top-right)
+2. Click "Identification" or "Verify Identity"
+3. "Enter real name" → type your LEGAL name exactly as on your ID card
+4. ID Type: ID Card (or Passport)
+5. Enter your ID Card number
+6. Select Date of issue of your ID card
+7. Select Date of expiry of your ID card
+8. Click "Next"
+9. Complete face verification if prompted
+10. Click "Done"
+� Wait for approval (minutes to 24 hours).
+
+💡 Your name, ID number, issue date, and expiry must
+   exactly match your physical ID card.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 6 — CREATE BLOFIN API KEYS
+
+1. Go to: blofin.com/account/apis
+   (Or: blofin.com → profile icon → "API")
+2. Click "Create API Key"
+3. Fill in:
+   • API Key Name: anything (e.g. MyBot)
+   • Description: optional
+   • Permissions: ONLY "Trade" (NEVER enable Withdraw)
+   • Passphrase: create a password for this key — save it
+4. Click "Confirm"
+5. If asked for 2FA, enter the code from your app/SMS
+6. ⚠️  IMMEDIATELY copy these THREE things:
+   • API Key (e.g. abc123def456...)
+   • Secret Key (e.g. xyz789...) — ONLY SHOWN ONCE!
+   • Passphrase (the password you just created)
+
+⚠️  The Secret Key is only shown ONCE. Copy it now!
+If you close this page without saving it, you need a new API key.
+
+� You now have 4 things saved:
+   ① ProtonVPN email & password (if using VPN)
+   ② OpenRouter API Key (sk-or-...)
+   ③ BloFin API Key
+   ④ BloFin Secret Key
+   ⑤ BloFin Passphrase
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 7 — FUND YOUR BLOFIN ACCOUNT (BUY USDT)
+⚠️  ProtonVPN connected? Keep it that way.
+
+LLM KnightTrader trades USDT-margined futures, so you need USDT (Tether).
+USDT is a "stablecoin" — 1 USDT = 1 USD.
+
+Pick ONE option to get USDT:
+
+━━━ OPTION A: Buy directly on BloFin (Easiest) ━━━
+BloFin has "Buy Crypto" — accepts credit/debit cards, Apple Pay, Google Pay.
+
+1. Log in to BloFin
+2. Hover "Assets" → "Overview" → click "Buy Crypto"
+3. Spend: your local currency (USD, EUR, etc.)
+4. Receive: USDT
+5. Enter amount (minimum ~$15)
+6. Payment: "Card" or "Apple Pay" / "Google Pay"
+7. Click "Buy Now" → review → click "Pay"
+8. Enter card details on payment partner page
+9. USDT arrives in your BloFin Funding Account (usually within minutes)
+
+💡 Fees: ~2-4% by card. Fastest method.
+   If card declined, try Apple Pay or Google Pay.
+
+━━━ OPTION B: Cash App → BloFin (Good for US users) ━━━
+1. Download Cash App, create account, link debit card
+2. Complete identity verification (name, DOB, last 4 SSN)
+3. Tap "Bitcoin" → "Buy Bitcoin" → enter amount
+4. Tap "Buy Now" and confirm
+5. Leave BTC in Cash App — you'll send to BloFin next
+   (Cash App only does Bitcoin, not USDT)
+
+━━━ OPTION C: Coinbase → BloFin (Global, lower fees) ━━━
+1. Go to coinbase.com, create account, verify identity
+2. Click "Buy & Sell" → Buy USDT → enter amount
+3. Payment: debit card (instant, ~3.99%), bank transfer (3-5 days, cheaper),
+   or PayPal (US/UK only, ~2-3%)
+4. Click "Buy Now" → USDT is in your Coinbase account
+
+━━━ OPTION D: Kraken → BloFin (EU/UK, lowest fees) ━━━
+1. Go to kraken.com, create account, verify identity
+2. Click "Buy Crypto" → select USDT
+3. EU: SEPA bank transfer (free, 1-2 days). Others: debit card (~3-4%)
+4. Once USDT arrives, ready to send to BloFin
+
+━━━ OPTION E: PayPal → BloFin ━━━
+⚠️  You CANNOT send PayPal-bought crypto to BloFin directly.
+   Workaround: Use PayPal as payment method on Coinbase or Kraken,
+   buy USDT there, then send to BloFin.
+
+━━━ SEND TO BLOFIN (if you used Options B, C, or D) ━━━
+If Option A, skip to Step 8 — your USDT is already on BloFin.
+
+1. On BloFin: hover "Assets" → click "Deposit"
+2. Search and select USDT
+3. Network: select "TRON (TRC20)" — fastest, cheapest (~$1 fee)
+   ⚠️  If sending BTC from Cash App: select "Bitcoin" / "BTC" network instead
+4. Copy the deposit address
+5. On your other exchange: go to "Withdraw" or "Send"
+   • Cash App: tap Bitcoin → "Send" → paste BloFin BTC address → send
+   • Coinbase: "Send/Receive" → "Send" → USDT → paste address → TRC20 → send
+   • Kraken: "Withdraw" → USDT → paste address → TRON → send
+6. ⚠️  CRITICAL: Network on BloFin MUST match network on sending platform.
+   Mismatch = FUNDS LOST FOREVER.
+7. Wait 1-5 minutes for deposit to arrive
+8. Check BloFin Assets → Overview — USDT balance should appear
+
+⚠️  If you sent BTC (from Cash App), convert to USDT on BloFin:
+   Trade → Spot → trade BTC/USDT pair.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 8 — INSTALL CURSOR (AI CODE ASSISTANT)
+
+1. Go to: cursor.com/download
+2. Click "Download for Windows" (or Mac)
+3. Run the downloaded installer
+4. Follow prompts (defaults are fine)
+5. Open Cursor when done
+6. Sign in (create a free account if needed)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 9 — CONFIGURE CURSOR TO USE OPENROUTER
+
+1. In Cursor, press Ctrl + Shift + J (Windows) or Cmd + Shift + J (Mac)
+2. Click "Models" in the left sidebar
+3. Scroll down to "API Keys"
+4. Click the ▼ arrow next to "API Keys" to expand
+5. Fill in:
+   Base URL:    https://openrouter.ai/api/v1
+   API Key:     (your sk-or-... key from Step 3)
+   Model Name:  openrouter/owl-alpha
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 10 — ENABLE "RUN EVERYTHING" MODE
+
+This lets Cursor work autonomously without asking "Allow?" every time.
+
+1. Ctrl + Shift + J (or Cmd + Shift + J)
+2. Click "Agents" in the sidebar
+3. Scroll to "Approvals & Execution"
+4. Find "Auto-Run"
+5. Change to "Run Everything"
+6. Click "Continue" on any warning popup
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 11 — DOWNLOAD LLM KNIGHTTRADER
+
+1. In Cursor, open a terminal: Ctrl + ` (backtick, below Esc)
+2. Run these commands one at a time (copy, paste, Enter):
+
+git clone https://github.com/1bananaonthewall-ux/llm-knighttrader.git
+cd llm-knighttrader
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+📌 If "python" not found → try python3. If that also fails,
+   install Python from python.org/downloads
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 12 — TELL CURSOR TO SET UP EVERYTHING
+
+Copy and paste this ENTIRE block into Cursor's chat (bottom of screen):
+
+---
+Read the file ReadMe.tx in full, then follow it to set up this project.
+
+Ask me for these 4 things in chat when you need them:
+1. BloFin API Key
+2. BloFin Secret Key
+3. BloFin Passphrase
+4. OpenRouter API Key (starts with sk-or-...)
+
+Use these settings:
+- LLM: OpenRouter with base URL https://openrouter.ai/api/v1 and model openrouter/owl-alpha
+- KNIGHTTRADER_PYTHON: leave as default
+
+After setup is complete, verify everything works end-to-end
+(health check, stack status, dashboard loads), then STOP the stack completely.
+
+Do NOT skip creating the desktop Start/Stop shortcuts.
+---
+
+Press Enter. Cursor will ask for your API keys — paste each one.
+It will: install dependencies, configure everything, create shortcuts,
+start the stack, verify it, then stop it. Takes 2-5 minutes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 13 — VERIFY DESKTOP SHORTCUTS
+
+1. Press Windows Key + D (show desktop)
+2. Look for these two icons:
+   • Start LLM KnightTrader.lnk  ← double-click to start
+   • Stop LLM KnightTrader.lnk   ← double-click to stop
+
+⚠️  If missing, run in terminal:
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create_desktop_shortcuts.ps1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ YOU'RE DONE!
+
+TO START TRADING:
+1. (If using VPN) Make sure ProtonVPN is CONNECTED to an allowed country
+2. Go to Desktop
+3. Double-click "Start LLM KnightTrader"
+4. Wait ~10 seconds
+5. Browser opens dashboard at http://127.0.0.1:8765
+6. You should see "Trader online" with green dot
+
+TO STOP TRADING:
+1. Double-click "Stop LLM KnightTrader" on desktop
+2. Wait for confirmation
+3. Disconnect VPN if desired
+
+💡 Every Start click kills old instances and starts fresh — guaranteed single instance.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❓ TROUBLESHOOTING
+
+"403 Forbidden" or "geo-restricted":
+→ VPN not connected or on blocked country. Reconnect to Netherlands.
+
+BloFin says "country not allowed":
+→ Connect ProtonVPN (Netherlands) first, then refresh BloFin.
+
+"No module named 'trader'":
+→ Run: .venv\Scripts\activate (then retry)
+
+"Trader offline" after starting:
+→ Wait 10 more seconds. Check data\logs\trader.err if still offline.
+
+"ModuleNotFoundError" during pip install:
+→ Need Python 3.12+. Download from python.org
+
+Shortcuts missing:
+→ Run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create_desktop_shortcuts.ps1`;
 
   navigator.clipboard.writeText(text).then(() => {
     const btn = document.querySelector('.copy-btn');
     btn.textContent = '✅ Copied!';
     btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = '📋 Copy Full Tutorial'; btn.classList.remove('copied'); }, 2500);
+    setTimeout(() => { btn.textContent = '📋 Copy Full Tutorial'; btn.classList.remove('copied'); }, 3000);
   });
 }
 </script>
