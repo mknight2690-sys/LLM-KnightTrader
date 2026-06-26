@@ -26,6 +26,7 @@ from trader.repair_agent import (
     log,
     log_err,
     log_warn,
+    maybe_autorepair_global,
     llm_ask,
     parse_llm_json,
     triage_with_repair_engine,
@@ -227,6 +228,20 @@ def run_cycle(client, llm, state: dict) -> None:
         if result and result.recovered:
             state["repairs_succeeded"] += 1
             seen[fp] = time.time()
+
+    # Final safety net: if order ops didn't recover but novel errors exist,
+    # let the full repair engine triage.
+    try:
+        maybe_autorepair_global(
+            client,
+            llm,
+            state,
+            label=LABEL,
+            max_incidents=1,
+            cooldown_sec=240.0,
+        )
+    except Exception as exc:
+        log_warn(LABEL, "Global autorepair failed", str(exc)[:200])
 
 
 if __name__ == "__main__":

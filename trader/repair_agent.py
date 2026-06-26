@@ -10,8 +10,10 @@ in advance. They diagnose from evidence (logs, errors, symptoms) and fix what's 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -22,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from activity_log import get_recent, log_event
+from activity_log import get_recent, load_history, log_event
 from config import DATA_DIR, PID_DIR, PROJECT_ROOT
 from llm.wrapper import LLMWrapper
 
@@ -109,6 +111,14 @@ def agent_main(
     if not _acquire_agent_lock(name):
         print(f"{label}: another instance already running — exiting", flush=True)
         sys.exit(1)
+
+    # Important: agents run as separate processes, so seed their local in-memory
+    # activity buffer from disk. This makes them "tuned into activity logs"
+    # immediately after Start.
+    try:
+        load_history(limit=1500)
+    except Exception:
+        pass
 
     def _stop(signum, frame):
         raise SystemExit(0)
@@ -330,6 +340,483 @@ def source_context_around_line(rel_path: str, line_no: int, *, radius: int = 12)
         marker = ">>>" if i == idx else "   "
         out.append(f"{marker} {i + 1:4d}| {lines[i]}")
     return "\n".join(out)
+
+
+# --- Novel-issue detection (logs, locks, multi-turn investigation) ---
+
+_TRACEBACK_FILE_RE = re.compile(r'File "([^"]+)", line (\d+), in (\w+)')
+_ERROR_TYPE_RE = re.compile(
+    r"(\w+(?:Error|Exception)|Traceback|CRITICAL|FATAL|failed|rejected|timeout|refused)[:\s]",
+    re.IGNORECASE,
+)
+_LOG_ISSUE_MARKERS = (
+    "traceback",
+    "error",
+    "exception",
+    "failed",
+    "critical",
+    "fatal",
+    "modulenotfound",
+    "importerror",
+    "attributeerror",
+    "typeerror",
+    "keyerror",
+    "syntaxerror",
+    "connection refused",
+    "timed out",
+    "103003",
+    "102089",
+)
+
+RESTARTABLE_MODULES = (
+    "trader.agent",
+    "dashboard.server",
+    "monitor.agent",
+)
+
+NOVEL_INVESTIGATOR_PROMPT = (
+    "You are an expert debugger fixing NOVEL failures in LLM KnightTrader.\n"
+    + TECHNICIAN_METHOD
+    + "\n\n"
+    "You have never seen this codebase. Work only from evidence in logs and source.\n"
+    "Multi-turn workflow:\n"
+    "1. INVESTIGATE: request read_files[] to inspect source (max 3 paths per turn)\n"
+    "2. DIAGNOSE: state root cause from evidence\n"
+    "3. FIX: output exact search_text/replace_text (max 15 lines changed)\n"
+    "4. RESTART: restart_module if runtime code changed\n\n"
+    "Respond ONLY with JSON:\n"
+    "{\n"
+    '  "phase": "investigate"|"fix"|"done",\n'
+    '  "read_files": ["trader/foo.py"],\n'
+    '  "diagnosis": "...",\n'
+    '  "file": "relative/path.py",\n'
+    '  "search_text": "exact match",\n'
+    '  "replace_text": "replacement",\n'
+    '  "restart_module": "trader.agent"|"dashboard.server"|null,\n'
+    '  "confidence": 0-100\n'
+    "}\n"
+    "phase=done when fixed or unfixable. confidence<50 means do not patch.\n"
+)
+
+
+def list_log_files() -> list[Path]:
+    log_dir = DATA_DIR / "logs"
+    if not log_dir.is_dir():
+        return []
+    files = sorted(
+        [p for p in log_dir.iterdir() if p.is_file() and p.suffix in (".log", ".err")],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return files[:20]
+
+
+def scan_logs_for_issues(*, tail_lines: int = 80) -> list[dict[str, Any]]:
+    """Scan all log files for tracebacks and error signatures — catches issues activity log missed."""
+    issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for log_path in list_log_files():
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        blob = "\n".join(lines[-tail_lines:])
+        if not blob.strip():
+            continue
+        lower = blob.lower()
+        if not any(m in lower for m in _LOG_ISSUE_MARKERS):
+            continue
+
+        tb_match = None
+        for m in _TRACEBACK_FILE_RE.finditer(blob):
+            tb_match = m
+        if tb_match:
+            abs_file = tb_match.group(1)
+            rel = _rel_project_path(abs_file)
+            err_m = _ERROR_TYPE_RE.search(blob[tb_match.end() :])
+            fp = f"tb:{rel}:{tb_match.group(2)}:{err_m.group(1) if err_m else 'err'}"
+            if fp not in seen:
+                seen.add(fp)
+                issues.append(
+                    {
+                        "type": "traceback",
+                        "source": log_path.name,
+                        "file": rel,
+                        "line": int(tb_match.group(2)),
+                        "function": tb_match.group(3),
+                        "error": (err_m.group(1) if err_m else "Traceback")[:200],
+                        "snippet": blob[-1800:],
+                        "fingerprint": fp,
+                    }
+                )
+            continue
+
+        for line in lines[-tail_lines:]:
+            stripped = line.strip()
+            if not stripped or len(stripped) < 8:
+                continue
+            low = stripped.lower()
+            if not any(m in low for m in _LOG_ISSUE_MARKERS):
+                continue
+            fp = f"log:{log_path.name}:{hashlib.sha1(stripped.encode()).hexdigest()[:12]}"
+            if fp in seen:
+                continue
+            seen.add(fp)
+            issues.append(
+                {
+                    "type": "log_error",
+                    "source": log_path.name,
+                    "error": stripped[:300],
+                    "snippet": stripped,
+                    "fingerprint": fp,
+                }
+            )
+    return issues[-15:]
+
+
+def _rel_project_path(abs_file: str) -> str:
+    try:
+        return str(Path(abs_file).resolve().relative_to(PROJECT_ROOT.resolve()))
+    except (ValueError, OSError):
+        norm = abs_file.replace("\\", "/")
+        for marker in ("hermes-llm-trader/", "llm-knighttrader/"):
+            if marker in norm:
+                return norm.split(marker, 1)[1]
+        return Path(abs_file).name
+
+
+def try_acquire_incident_lock(fingerprint: str, *, ttl_sec: float = 120.0) -> bool:
+    """One repair agent owns a fingerprint at a time."""
+    if not fingerprint or fingerprint == "ok":
+        return True
+    lock = PID_DIR / f"repair_incident_{hashlib.sha1(fingerprint.encode()).hexdigest()[:16]}.lock"
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    if lock.is_file():
+        try:
+            raw = lock.read_text(encoding="utf-8").strip().split("|")
+            ts = float(raw[0])
+            owner = int(raw[1]) if len(raw) > 1 else 0
+            if now - ts < ttl_sec and owner != os.getpid() and _pid_alive(owner):
+                return False
+        except (ValueError, OSError):
+            pass
+    lock.write_text(f"{now}|{os.getpid()}", encoding="utf-8")
+    return True
+
+
+def release_incident_lock(fingerprint: str) -> None:
+    if not fingerprint:
+        return
+    lock = PID_DIR / f"repair_incident_{hashlib.sha1(fingerprint.encode()).hexdigest()[:16]}.lock"
+    try:
+        if lock.is_file():
+            raw = lock.read_text(encoding="utf-8").strip().split("|")
+            owner = int(raw[1]) if len(raw) > 1 else 0
+            if owner == os.getpid():
+                lock.unlink(missing_ok=True)
+    except (ValueError, OSError):
+        pass
+
+
+def restart_stack_module(module: str) -> dict[str, Any]:
+    """Restart a stack module after a code or runtime fix."""
+    from trader.stack_control import restart_module
+
+    return restart_module(module)
+
+
+def apply_source_patch(
+    rel_path: str,
+    search_text: str,
+    replace_text: str,
+    *,
+    label: str = "repair_agent",
+) -> bool:
+    """Apply a surgical source patch with timestamped backup."""
+    file_path = PROJECT_ROOT / rel_path
+    if not file_path.is_file():
+        log_err(label, "Patch file missing", rel_path)
+        return False
+    source = read_file_safe(file_path)
+    if source is None:
+        return False
+    if search_text not in source:
+        log_warn(label, "Patch search_text missing", rel_path)
+        return False
+    new_source = source.replace(search_text, replace_text, 1)
+    if new_source == source:
+        return False
+    try:
+        backup = file_path.with_suffix(file_path.suffix + f".bak_{int(time.time())}")
+        backup.write_text(source, encoding="utf-8")
+    except OSError:
+        pass
+    if not write_file_safe(file_path, new_source):
+        return False
+    rc, out = run_cmd(
+        [sys.executable, "-m", "py_compile", str(file_path)],
+        timeout=25,
+    )
+    if rc != 0:
+        log_warn(label, "Patch syntax check failed", out[:200])
+        try:
+            write_file_safe(file_path, source)
+        except OSError:
+            pass
+        return False
+    log(label, "Source patch applied", rel_path)
+    return True
+
+
+def _run_safe_diagnostic(cmd: list[str]) -> tuple[int, str]:
+    if not cmd or len(cmd) > 10:
+        return -1, "diagnostic rejected"
+    exe = str(cmd[0]).lower()
+    if not (exe.endswith("python.exe") or exe.endswith("python") or cmd[0] == sys.executable):
+        return -1, "only python diagnostics allowed"
+    joined = " ".join(cmd).lower()
+    for blocked in ("pip install", "git push", "rm -", "del /", "format ", "shutdown"):
+        if blocked in joined:
+            return -1, "blocked diagnostic"
+    if "-m" in cmd and "py_compile" not in joined and "import" not in joined:
+        return -1, "only py_compile or import checks"
+    return run_cmd(cmd, timeout=30)
+
+
+def run_novel_investigation(
+    agent_name: str,
+    label: str,
+    llm: LLMWrapper,
+    state: dict[str, Any],
+    issue: dict[str, Any],
+    *,
+    max_turns: int = 4,
+) -> bool:
+    """Multi-turn LLM investigation for novel bugs — read files, patch, restart, verify."""
+    fp = str(issue.get("fingerprint") or issue.get("error") or "")[:200]
+    if not try_acquire_incident_lock(fp):
+        return False
+
+    try:
+        context_parts = [
+            f"ISSUE TYPE: {issue.get('type')}",
+            f"SOURCE LOG: {issue.get('source', '')}",
+            f"ERROR: {issue.get('error', '')}",
+        ]
+        if issue.get("file"):
+            ctx = source_context_around_line(str(issue["file"]), int(issue.get("line") or 1))
+            if ctx:
+                context_parts.append(f"SOURCE CONTEXT:\n{ctx}")
+        context_parts.append(f"LOG SNIPPET:\n{(issue.get('snippet') or '')[-2500:]}")
+        context_parts.append(f"\nProject .py files ({len(list_source_files())} total) — request read_files to inspect.")
+
+        transcript = "\n".join(context_parts)
+        fixed = False
+
+        for turn in range(max_turns):
+            user_msg = transcript
+            if turn > 0:
+                user_msg += f"\n\n--- TURN {turn + 1}/{max_turns} ---\nContinue investigation or apply fix."
+            answer = llm_ask(agent_name, llm, NOVEL_INVESTIGATOR_PROMPT, user_msg[:8000], max_tokens=1800)
+            if not answer:
+                break
+            try:
+                plan = parse_llm_json(answer)
+            except (json.JSONDecodeError, ValueError) as exc:
+                log_warn(label, "Investigation parse failed", str(exc)[:100])
+                break
+
+            phase = str(plan.get("phase") or "investigate")
+            diagnosis = str(plan.get("diagnosis") or "")[:300]
+            if diagnosis:
+                log(label, f"Investigation t{turn + 1}", diagnosis[:200])
+
+            read_files = plan.get("read_files") or []
+            if isinstance(read_files, list) and read_files:
+                reads = []
+                for rel in read_files[:3]:
+                    rel_s = str(rel).strip()
+                    content = read_file_safe(PROJECT_ROOT / rel_s)
+                    if content:
+                        reads.append(f"=== {rel_s} ===\n{content[:4000]}")
+                    else:
+                        reads.append(f"=== {rel_s} === (not found)")
+                transcript += "\n\nFILE CONTENTS:\n" + "\n\n".join(reads)
+
+            run_cmd_plan = plan.get("run_cmd")
+            if isinstance(run_cmd_plan, list) and run_cmd_plan:
+                rc, out = _run_safe_diagnostic([str(x) for x in run_cmd_plan])
+                transcript += f"\n\nDIAGNOSTIC rc={rc}:\n{out[:800]}"
+
+            confidence = int(plan.get("confidence") or 0)
+            if phase == "fix" and plan.get("file") and plan.get("search_text") and confidence >= 50:
+                ok = apply_source_patch(
+                    str(plan["file"]),
+                    str(plan["search_text"]),
+                    str(plan.get("replace_text") or ""),
+                    label=label,
+                )
+                if ok:
+                    state["repairs_succeeded"] += 1
+                    fixed = True
+                    restart = plan.get("restart_module")
+                    if restart and str(restart) in RESTARTABLE_MODULES:
+                        restart_stack_module(str(restart))
+                        log(label, "Restarted after patch", str(restart))
+                    if phase == "done" or confidence >= 70:
+                        return True
+
+            if phase == "done":
+                return fixed
+
+        return fixed
+    finally:
+        release_incident_lock(fp)
+
+
+def gather_novel_incidents() -> list[dict[str, Any]]:
+    """Combine log scan + activity errors into deduped novel incidents."""
+    incidents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for issue in scan_logs_for_issues():
+        fp = str(issue.get("fingerprint") or "")
+        if fp and fp not in seen:
+            seen.add(fp)
+            incidents.append(issue)
+
+    for event in get_recent_errors(30):
+        detail = event.get("detail", "")
+        title = event.get("title", "")
+        blob = f"{title} {detail}"
+        if not any(m in blob.lower() for m in _LOG_ISSUE_MARKERS):
+            continue
+        fp = f"act:{hashlib.sha1(blob.encode()).hexdigest()[:16]}"
+        if fp in seen:
+            continue
+        seen.add(fp)
+        if "Traceback" in detail:
+            files = _TRACEBACK_FILE_RE.findall(detail)
+            if files:
+                target = files[-1]
+                incidents.append(
+                    {
+                        "type": "traceback",
+                        "source": "activity_log",
+                        "file": _rel_project_path(target[0]),
+                        "line": int(target[1]),
+                        "function": target[2],
+                        "error": title[:200],
+                        "snippet": detail[-2000:],
+                        "fingerprint": fp,
+                    }
+                )
+                continue
+        incidents.append(
+            {
+                "type": "activity_error",
+                "source": "activity_log",
+                "error": f"{title}: {detail[:200]}",
+                "snippet": detail[:1500],
+                "fingerprint": fp,
+            }
+        )
+    return incidents[-12:]
+
+
+def _infer_repair_phase_from_error(err: str, title: str) -> str:
+    e = (err or "").lower()
+    t = (title or "").lower()
+    if any(k in e for k in ("tpsl", "tp/sl", "tp/sl", "tp ", "sl ", "tpsl_failed")):
+        return "tpsl_failed"
+    if "close" in e and ("fail" in e or "reject" in e):
+        return "close_failed"
+    if "open" in e and "reject" in e:
+        return "open_rejected"
+    if "open" in e and ("fail" in e or "reject" in e or "error" in e):
+        return "open_failed"
+    if "cycle_crash" in e or "crash" in e or "exception" in e:
+        return "cycle_crash"
+    if any(k in e for k in ("proactive", "stale", "anomaly", "mismatch", "cooldown")):
+        return "proactive_anomaly"
+    # Default: let repair.py decide based on error codes (102089, etc.).
+    return "unknown_incident"
+
+
+def _extract_inst_id(text: str) -> str | None:
+    if not text:
+        return None
+    # Try common patterns in error blobs.
+    m = re.search(r"instId[\\s:=\\\"]+([A-Za-z0-9_-]+)", text)
+    if m:
+        return m.group(1)
+    m2 = re.search(r"\\b(inst[\\-]?[A-Za-z0-9_-]{3,})\\b", text)
+    if m2:
+        return m2.group(1)
+    return None
+
+
+def maybe_autorepair_global(
+    client: Any,
+    llm: LLMWrapper,
+    state: dict[str, Any],
+    *,
+    label: str,
+    max_incidents: int = 2,
+    cooldown_sec: float = 180.0,
+) -> bool:
+    """
+    Extra safety net:
+    - Watches for novel failures in BOTH activity log + log files
+    - Feeds them into trader.repair.llm_triage_and_repair
+    - Does NOT replace role-specific behavior; it only triggers when we see
+      new, non-repaired failures.
+    """
+    try:
+        incidents = gather_novel_incidents()
+    except Exception as exc:
+        log_warn(label, "Global autorepair incident scan failed", str(exc)[:200])
+        return False
+
+    seen = state.setdefault("global_autorepair_seen", {})
+    ok_any = False
+    for issue in incidents[-max_incidents:]:
+        fp = str(issue.get("fingerprint") or issue.get("error") or "")[:200]
+        if not fp:
+            continue
+        last = float(seen.get(fp) or 0)
+        if time.time() - last < cooldown_sec:
+            continue
+
+        err = str(issue.get("error") or issue.get("snippet") or "")
+        title = str(issue.get("file") or issue.get("source") or "")
+        phase = _infer_repair_phase_from_error(err, title)
+        inst_id = _extract_inst_id(err)
+
+        incident = {
+            "phase": phase,
+            "error": err[:1200],
+            "title": title[:120],
+            "instId": inst_id,
+        }
+
+        result = triage_with_repair_engine(
+            client,
+            llm,
+            state,
+            incident,
+            label=label,
+        )
+        if result and (result.recovered or result.actions_taken):
+            seen[fp] = time.time()
+            ok_any = True
+            log(label, "Global autorepair recovered", f"phase={phase} fp={fp[:16]}")
+        else:
+            # Still mark it so we don't loop.
+            seen.setdefault(fp, time.time())
+
+    return ok_any
 
 
 def kill_agent_process() -> int:

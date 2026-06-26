@@ -21,12 +21,15 @@ from config import DASHBOARD_PORT
 from trader.repair_agent import (
     TECHNICIAN_METHOD,
     agent_main,
+    gather_novel_incidents,
     get_log_tail,
     get_recent_errors,
     get_stack_status,
     list_source_files,
     log,
     log_warn,
+    maybe_autorepair_global,
+    run_novel_investigation,
     triage_with_repair_engine,
 )
 
@@ -168,7 +171,35 @@ def run_cycle(client, llm, state: dict) -> None:
         log(LABEL, "Fixed by reconcile", "; ".join(reconcile.get("actions") or [])[:200])
         return
 
-    # Step 3: full repair engine (deterministic playbook + LLM triage)
+    # Step 3: novel failure investigation (multi-turn diagnose + source patch).
+    # This is how the agents "learn" new breakage that isn't covered by the action catalog.
+    try:
+        novel_seen = state.setdefault("novel_fingerprints", {})
+        incidents = gather_novel_incidents()
+        for issue in incidents:
+            issue_fp = str(issue.get("fingerprint") or "")
+            if not issue_fp or issue_fp == "ok":
+                continue
+            last = float(novel_seen.get(issue_fp) or 0)
+            if time.time() - last < 180.0:
+                continue
+            log(LABEL, "Novel incident investigate", str(issue.get("error") or issue.get("file") or "")[:180])
+            novel_seen[issue_fp] = time.time()
+            ok = run_novel_investigation(
+                AGENT_NAME,
+                LABEL,
+                llm,
+                state,
+                issue,
+                max_turns=4,
+            )
+            if ok:
+                state["repairs_succeeded"] += 1
+                return
+    except Exception as exc:
+        log_warn(LABEL, "Novel investigation failed", str(exc)[:200])
+
+    # Step 4: full repair engine (deterministic playbook + LLM triage)
     incident = _build_incident(evidence, reconcile)
     incident["technician_method"] = TECHNICIAN_METHOD
     result = triage_with_repair_engine(client, llm, state, incident, label=LABEL)
@@ -183,6 +214,18 @@ def run_cycle(client, llm, state: dict) -> None:
         )
     else:
         log_warn(LABEL, "Repair incomplete", fp[:200])
+        # Extra net: if something novel slipped through, try global autorepair once.
+        try:
+            maybe_autorepair_global(
+                client,
+                llm,
+                state,
+                label=LABEL,
+                max_incidents=1,
+                cooldown_sec=240.0,
+            )
+        except Exception as exc:
+            log_warn(LABEL, "Global autorepair failed", str(exc)[:200])
 
 
 if __name__ == "__main__":

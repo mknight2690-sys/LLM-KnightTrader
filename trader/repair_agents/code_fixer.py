@@ -21,6 +21,7 @@ from config import DATA_DIR, PROJECT_ROOT
 from trader.repair_agent import (
     TECHNICIAN_METHOD,
     agent_main,
+    gather_novel_incidents,
     get_log_tail,
     get_recent_errors,
     list_source_files,
@@ -28,8 +29,10 @@ from trader.repair_agent import (
     log_err,
     log_warn,
     llm_ask,
+    maybe_autorepair_global,
     parse_llm_json,
     read_file_safe,
+    run_novel_investigation,
     source_context_around_line,
     write_file_safe,
     run_cmd,
@@ -226,6 +229,40 @@ def run_cycle(client, llm, state: dict) -> None:
         log(LABEL, "Bug fixed", f"file={plan['file']} conf={confidence} | {plan.get('diagnosis','')[:200]}")
     else:
         log_warn(LABEL, "Fix failed", f"file={plan['file']}")
+        # If the surgical search/replace couldn't apply (or was blocked by confidence),
+        # fall back to novel multi-turn investigation + patching.
+        try:
+            incidents = gather_novel_incidents()
+            for issue in incidents:
+                if str(issue.get("file") or "") != str(plan.get("file") or ""):
+                    continue
+                log(LABEL, "Escalating to novel investigation", f"issue={issue.get('fingerprint') or ''}")
+                ok2 = run_novel_investigation(
+                    AGENT_NAME,
+                    LABEL,
+                    llm,
+                    state,
+                    issue,
+                    max_turns=3,
+                )
+                if ok2:
+                    state["repairs_succeeded"] += 1
+                break
+        except Exception as exc:
+            log_warn(LABEL, "Novel escalation failed", str(exc)[:200])
+
+        # Final safety net: let the full repair engine triage from global logs.
+        try:
+            maybe_autorepair_global(
+                client,
+                llm,
+                state,
+                label=LABEL,
+                max_incidents=1,
+                cooldown_sec=240.0,
+            )
+        except Exception as exc:
+            log_warn(LABEL, "Global autorepair failed", str(exc)[:200])
 
 
 if __name__ == "__main__":
