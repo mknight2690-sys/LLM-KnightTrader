@@ -1,0 +1,78 @@
+You are helping me set up LLM KnightTrader — an autonomous BloFin futures trading bot with a live dashboard.
+
+REPO (clone this first):
+https://github.com/1bananaonthewall-ux/llm-knighttrader
+
+CANONICAL INSTRUCTIONS — read these files in the repo before doing anything:
+1. ReadMe.tx   (full runbook — read entire file)
+2. AGENTS.md   (short agent checklist)
+
+Your job: get LLM KnightTrader running on my machine exactly as documented, with live trading enabled.
+
+---
+
+STEP 1 — ASK ME THESE QUESTIONS (do not skip)
+
+A) API CREDENTIALS LOCATION
+   Ask me: "Describe where your API credentials are on your computer — full path or folder (e.g. Downloads\My API file.txt, or credentials folder)."
+   Then:
+   - Read that file (or help me copy keys into the repo’s credentials/blofin.txt)
+   - BloFin needs: API Key, Secret Key, Passphrase
+   - LLM needs: OPENROUTER_API_KEY (sk-or-...) in .env (copy .env.example → .env)
+   - NEVER commit secrets to git, NEVER paste keys in public chats if avoidable
+
+B) BLOFIN + VPN / LOCATION
+   Ask me: "What country are you physically in?"
+   Ask me: "Do you use ProtonVPN? If yes, which country/server is your VPN exit?"
+   BloFin blocks many regions. Official list:
+   https://blofin.com/en/support/Terms/7296238795279-TERMS-OF-USE
+
+   ProtonVPN + BloFin quick guide:
+   - OK for BloFin exit: Netherlands, Switzerland, Poland, Romania, Norway, Japan (Free tier)
+   - NOT for BloFin exit: United States, Canada, Singapore, Mexico
+   - Plus plan: use EU countries not on BloFin’s restricted list (e.g. Germany, Netherlands)
+   VPN must stay connected to an allowed exit while the bot runs.
+
+C) PYTHON
+   Ask if Python 3.12+ is installed, or help me install it.
+   Set KNIGHTTRADER_PYTHON if needed.
+
+---
+
+STEP 2 — SET UP (follow ReadMe.tx)
+
+  git clone https://github.com/1bananaonthewall-ux/llm-knighttrader.git
+  cd llm-knighttrader
+  python -m venv .venv
+  .venv\Scripts\activate
+  pip install -r requirements.txt
+  copy credentials\blofin.example.txt credentials\blofin.txt
+  copy .env.example .env
+  (fill credentials/blofin.txt and .env from my files — see Step 1A)
+
+  Start:
+  launcher\Start LLM KnightTrader.bat
+  OR: powershell -File scripts\start_core.ps1 -OpenBrowser
+
+  Dashboard: http://127.0.0.1:8765
+
+---
+
+STEP 3 — VERIFY
+
+  - GET http://127.0.0.1:8765/api/health
+  - GET http://127.0.0.1:8765/api/stack/status → trader online
+  - Dashboard shows equity updating
+  - If 403/geo errors: fix ProtonVPN exit country and restart
+
+---
+
+RULES FOR YOU (the agent)
+
+- Read ReadMe.tx end-to-end before improvising.
+- Ask for credential FILE LOCATION first — then read/copy into credentials/blofin.txt and .env locally.
+- Do not push API keys to GitHub.
+- Confirm VPN exit country if I’m in a restricted region.
+- If trader won’t start: check data\logs\trader.err
+
+Go. Start by asking me where my API credentials live on my computer.

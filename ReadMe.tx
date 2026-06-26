@@ -289,6 +289,7 @@ Manual sync:
   powershell -File scripts\auto_sync_git.ps1 -Message "describe change"
 
 Public repo: https://github.com/1bananaonthewall-ux/llm-knighttrader
+Share prompt for new users/agents: SHARE_PROMPT.txt (copy-paste to any AI)
 (If forked, update remote URL in your clone.)
 
 ================================================================================
