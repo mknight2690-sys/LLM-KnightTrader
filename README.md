@@ -17,6 +17,8 @@ REM Edit credentials\blofin.txt and .env with your keys
 launcher\Start LLM KnightTrader.bat
 ```
 
+Creates **Start** / **Stop** desktop shortcuts on first successful start.
+
 Dashboard: **http://127.0.0.1:8765**
 
 ## Requirements

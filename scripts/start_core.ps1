@@ -105,4 +105,13 @@ if ($OpenBrowser) {
     Start-Process $DashboardUrl
 }
 
+$shortcutScript = Join-Path $PSScriptRoot "create_desktop_shortcuts.ps1"
+if (Test-Path $shortcutScript) {
+    try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $shortcutScript
+    } catch {
+        Write-Host "Note: desktop shortcuts could not be created: $_"
+    }
+}
+
 Write-Host "LLM KnightTrader ready -> $DashboardUrl"

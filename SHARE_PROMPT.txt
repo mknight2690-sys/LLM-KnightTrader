@@ -53,6 +53,7 @@ STEP 2 — SET UP (follow ReadMe.tx)
   Start:
   launcher\Start LLM KnightTrader.bat
   OR: powershell -File scripts\start_core.ps1 -OpenBrowser
+  (creates Start/Stop desktop shortcuts automatically on successful start)
 
   Dashboard: http://127.0.0.1:8765
 

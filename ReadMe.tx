@@ -95,6 +95,8 @@ You MUST NOT assume credentials exist. Before install/start, ask the human:
      launcher\Start LLM KnightTrader.bat
    OR:
      powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_core.ps1 -OpenBrowser
+   First successful start also creates desktop shortcuts:
+     Start LLM KnightTrader.lnk  /  Stop LLM KnightTrader.lnk
 
 7. Verify:
      curl http://127.0.0.1:8765/api/health
@@ -114,7 +116,7 @@ blofin/           Exchange client + account cache / stream guardian
 llm/              Multi-provider LLM wrapper (chat_race, failover)
 monitor/          Optional health monitor (not started by default stack)
 scripts/          start/stop, kill agents, baseline tools
-launcher/         Desktop-friendly .bat starters
+launcher/         Desktop-friendly .bat starters (+ auto desktop .lnk on first start)
 credentials/      LOCAL ONLY — blofin.txt + .env (gitignored)
 data/             LOCAL ONLY — state, logs, activity (gitignored)
 
