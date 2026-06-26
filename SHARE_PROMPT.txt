@@ -18,7 +18,7 @@ STEP 1 — ASK ME THESE QUESTIONS (do not skip)
 A) API CREDENTIALS LOCATION
    Ask me: "Describe where your API credentials are on your computer — full path or folder (e.g. Downloads\My API file.txt, or credentials folder)."
    Then:
-   - Read that file (or help me copy keys into the repo’s credentials/blofin.txt)
+   - Read that file (or help me copy keys into the repo's credentials/blofin.txt)
    - BloFin needs: API Key, Secret Key, Passphrase
    - LLM needs: OPENROUTER_API_KEY (sk-or-...) in .env (copy .env.example → .env)
    - NEVER commit secrets to git, NEVER paste keys in public chats if avoidable
@@ -32,7 +32,7 @@ B) BLOFIN + VPN / LOCATION
    ProtonVPN + BloFin quick guide:
    - OK for BloFin exit: Netherlands, Switzerland, Poland, Romania, Norway, Japan (Free tier)
    - NOT for BloFin exit: United States, Canada, Singapore, Mexico
-   - Plus plan: use EU countries not on BloFin’s restricted list (e.g. Germany, Netherlands)
+   - Plus plan: use EU countries not on BloFin's restricted list (e.g. Germany, Netherlands)
    VPN must stay connected to an allowed exit while the bot runs.
 
 C) PYTHON
@@ -52,27 +52,47 @@ STEP 2 — SET UP (follow ReadMe.tx)
   copy .env.example .env
   (fill credentials/blofin.txt and .env from my files — see Step 1A)
 
-  Start (first time — verify only):
+  Start (verification run only — you will stop it in Step 4):
   launcher\Start LLM KnightTrader.bat
-  OR: powershell -File scripts\start_core.ps1 -OpenBrowser
-  (creates Start/Stop desktop shortcuts automatically on successful start)
-
-  AFTER VERIFY: double-click "Stop LLM KnightTrader" on desktop.
-  DAILY USE: only double-click "Start LLM KnightTrader" to run the stack.
-  Start always: stops ALL KT instances → restarts dashboard + trader fresh.
-  Stop always: kills ALL KT instances (dashboard, trader, monitor, watchers).
+  OR: python scripts\stack_launcher.py start --open-browser
+  (creates "Start LLM KnightTrader" and "Stop LLM KnightTrader" on desktop)
 
   Dashboard: http://127.0.0.1:8765
 
 ---
 
-STEP 3 — VERIFY
+STEP 3 — VERIFY END-TO-END (you must confirm ALL before stopping)
 
-  - GET http://127.0.0.1:8765/api/health
-  - GET http://127.0.0.1:8765/api/stack/status → trader online
-  - Dashboard shows equity updating
-  - Desktop should have: "Start LLM KnightTrader" and "Stop LLM KnightTrader" shortcuts
-  - If 403/geo errors: fix ProtonVPN exit country and restart
+  Run these checks and report pass/fail to me:
+  - GET http://127.0.0.1:8765/api/health → ok
+  - GET http://127.0.0.1:8765/api/stack/status → trader status "online", count 1
+  - GET http://127.0.0.1:8765/api/status → equity/available present (not broken)
+  - Dashboard loads in browser; trader dot green; equity updating
+  - Desktop has shortcuts: "Start LLM KnightTrader" and "Stop LLM KnightTrader"
+  - If 403/geo errors: fix ProtonVPN exit country, restart once, re-verify
+
+  Only proceed to Step 4 when every check passes.
+
+---
+
+STEP 4 — STOP AND HAND OFF (mandatory — do not skip)
+
+  You MUST stop the stack before ending setup:
+  launcher\Stop LLM KnightTrader.bat
+  OR: python scripts\stack_launcher.py stop
+
+  Confirm stopped:
+  - python -c "from trader.stack_control import is_entire_stack_stopped; print(is_entire_stack_stopped())"
+  - Must print True
+
+  Then tell me clearly:
+  "Setup is complete. I verified LLM KnightTrader end-to-end and stopped it.
+   From now on, double-click Start LLM KnightTrader on your desktop to run.
+   Double-click Stop LLM KnightTrader when you want to shut everything down.
+   Start always kills any old instances and restarts dashboard + trader fresh."
+
+  Do NOT leave trader or dashboard running in the background.
+  Do NOT create scheduled tasks, startup entries, or monitor processes.
 
 ---
 
@@ -80,10 +100,9 @@ RULES FOR YOU (the agent)
 
 - Read ReadMe.tx end-to-end before improvising.
 - Ask for credential FILE LOCATION first — then read/copy into credentials/blofin.txt and .env locally.
-- After install: verify once, then STOP stack — tell user daily control is desktop Start/Stop only.
-- Do not leave auto-start scripts, scheduled tasks, or background traders running after setup.
+- Verify end-to-end (Step 3), then STOP (Step 4) — user starts via desktop only after that.
 - Do not push API keys to GitHub.
-- Confirm VPN exit country if I’m in a restricted region.
-- If trader won’t start: check data\logs\trader.err
+- Confirm VPN exit country if I'm in a restricted region.
+- If trader won't start: check data\logs\trader.err
 
 Go. Start by asking me where my API credentials live on my computer.
