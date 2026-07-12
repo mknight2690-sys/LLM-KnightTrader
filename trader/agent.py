@@ -60,6 +60,7 @@ from trader.harvest import (
 )
 from trader.sizing import ABSOLUTE_MIN_MARGIN, budget_for_decision, budget_for_scan_row
 from trader.tpsl import attach_tpsl_safe, resolve_mark_price
+from trader.sync_tpsl import sync_tpsl
 from trader.state import append_research, append_trade, append_user_directive, load_state, reload_chat_fields, save_state
 
 _running = True
@@ -289,6 +290,21 @@ def _record_close(
 ) -> bool:
     inst = str(pos.get("instId") or "")
     realized_pnl = capture_close_pnl(pos)
+
+    # Before closing, remove any existing TPSL triggers so the close is not
+    # blocked/cancelled by lingering TP/SL OCO orders.
+    try:
+        pending = client.get_orders_tpsl_pending(inst_id=inst)
+        tpsl_ids = [
+            str(row.get("tpslId"))
+            for row in (pending.get("data") or [])
+            if row.get("tpslId")
+        ]
+        if tpsl_ids:
+            client.cancel_tpsl(inst_id=inst, tpsl_ids=tpsl_ids)
+    except Exception:
+        pass
+
     resp = client.close_position(pos)
     rejected, err = client.order_rejected(resp)
     row = {
@@ -448,6 +464,7 @@ def _execute_decision(
         price=price,
         margin_budget=margin_budget,
         size_contracts=size_hint,
+        account=account,
     )
     if not plan:
         plan = pick_best_affordable(scan_rows, account, margin_budget=margin_budget, inst_id=inst, side=side)
@@ -566,7 +583,7 @@ def _execute_decision(
             account=fresh,
         )
         results.append({"action": "tpsl", "response": tpsl})
-        ok = str(tpsl.get("code")) in ("0", "0.0")
+        ok = bool(tpsl.get("_tpsl_effective")) and str(tpsl.get("code")) in ("0", "0.0")
         if not ok:
             _, tpsl_err = client.order_rejected(tpsl)
             triage = llm_triage_and_repair(
@@ -606,35 +623,30 @@ def _repair_missing_tpsl(
     account: dict[str, Any],
 ) -> None:
     """Attach TP/SL on open positions that never got tpsl_ok after their last open."""
-    trades = list(state.get("trades") or [])
+    # Exchange truth: verify we have LIVE TPSL triggers. The `get_positions()`
+    # payload often does not include TP/SL trigger fields, so relying purely
+    # on snapshots (or old trade history) can produce false positives.
     for pos in account.get("positions") or []:
         inst = str(pos.get("instId") or "")
         raw_size = float(pos.get("size") or pos.get("positions") or 0)
         if not inst or abs(raw_size) <= 0:
             continue
+        pending = client.get_orders_tpsl_pending(inst_id=inst)
+        live_rows = [
+            r
+            for r in (pending.get("data") or [])
+            if str(r.get("state") or "").lower() == "live"
+        ]
+        if live_rows:
+            continue
+
         side = "buy" if raw_size > 0 else "sell"
-        last_open_ts = 0.0
-        for tr in reversed(trades):
-            if tr.get("instId") != inst:
-                continue
-            if tr.get("action") == "open" and tr.get("ok") is not False:
-                last_open_ts = float(tr.get("ts") or 0)
-                break
-        if last_open_ts <= 0:
-            continue
-        has_tpsl = any(
-            tr.get("instId") == inst
-            and tr.get("action") == "tpsl_ok"
-            and float(tr.get("ts") or 0) >= last_open_ts - 1
-            for tr in trades
-        )
-        if has_tpsl:
-            continue
         contracts = client._format_order_size(inst, abs(raw_size))
         mark = resolve_mark_price(client, inst, account=account)
         if mark <= 0:
             continue
-        log_event("trade", f"Repair TP/SL {inst}", f"missing after open — attaching at mark {mark:.6f}")
+
+        log_event("trade", f"Repair TP/SL {inst}", f"no live TPSL — attaching at mark {mark:.6f}")
         resp = attach_tpsl_safe(
             client,
             inst_id=inst,
@@ -646,7 +658,12 @@ def _repair_missing_tpsl(
             leverage=int(float(pos.get("leverage") or 3)),
             account=account,
         )
-        row = {"action": "tpsl" if str(resp.get("code")) not in ("0", "0.0") else "tpsl_ok", "instId": inst, "response": resp, "ts": time.time()}
+        row = {
+            "action": "tpsl" if str(resp.get("code")) not in ("0", "0.0") else "tpsl_ok",
+            "instId": inst,
+            "response": resp,
+            "ts": time.time(),
+        }
         if str(resp.get("code")) in ("0", "0.0"):
             append_trade(state, row)
 
@@ -859,7 +876,13 @@ def run_cycle(client: BlofinClient, llm: LLMWrapper, state: dict[str, Any]) -> d
 
     harvest_results = _auto_harvest_winners(client, llm, state, account, scan)
     harvest_results.extend(_proactive_repairs(client, llm, state, account, scan))
-    _repair_missing_tpsl(client, state, account)
+    sync_summary = sync_tpsl(client, account)
+    if sync_summary.get("attached") or sync_summary.get("orphan_cancelled"):
+        log_event(
+            "trade",
+            "TP/SL sync complete",
+            json.dumps({k: sync_summary[k] for k in ("positions", "live_tpsl_total", "orphan_cancelled", "missing_attached")})[:500],
+        )
 
     if not account.get("cached"):
         log_event(
@@ -1060,7 +1083,11 @@ def main() -> None:
         "to satisfy min contract margin; prefers affordable low-notional perps."
     )
     save_state(state)
-    llm = LLMWrapper()
+    llm = LLMWrapper(
+        provider_priority=("openrouter",),
+        pool_name="trader",
+        openrouter_models=["meta-llama/llama-3.1-405b-instruct:free"],
+    )
     log_event("system", "LLM pool ready", json.dumps(llm.status()))
 
     from blofin.account_cache import get_account_snapshot
