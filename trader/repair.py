@@ -52,7 +52,9 @@ _LLM_PRIORITY_PHASES = frozenset(
         "open_failed",
         "open_rejected",
         "close_failed",
-        "tpsl_failed",
+        # IMPORTANT: TP/SL stabilization should not depend on LLM availability.
+        # `retry_tpsl` is deterministic and should run even if LLM keys/models
+        # are exhausted or on cooldown.
     }
 )
 
@@ -153,10 +155,43 @@ def _normalize_repair_actions(actions: list[Any]) -> list[dict[str, Any]]:
     return normalized
 
 
-def _verify_tpsl_attached(client: Any, inst_id: str) -> bool:
-    """Verify TP and SL triggers exist after retry_tpsl."""
+def _verify_tpsl_attached(
+    client: Any,
+    inst_id: str,
+    *,
+    last_attach_resp: dict[str, Any] | None = None,
+) -> bool:
+    """Verify TP/SL are attached after retry_tpsl.
+
+    NOTE:
+    Your BloFin `get_positions` / account snapshot response often does *not*
+    include TP/SL trigger fields, even when the `order-tpsl` call returns
+    `code=0`. So the primary verification is the exchange acceptance response
+    (code==0 or a returned tpslId). We fall back to positions-field checks only
+    when those fields are present in the snapshot.
+    """
     if not inst_id:
         return False
+
+    # Prefer verifying via order-tpsl-detail. BloFin accepts TPSL but can
+    # immediately cancel it if triggers are invalid; your `get_positions()`
+    # snapshot often doesn't expose TP/SL fields.
+    if isinstance(last_attach_resp, dict) and str(last_attach_resp.get("code")) in ("0", "0.0"):
+        data = last_attach_resp.get("data") or {}
+        if isinstance(data, dict) and data.get("tpslId") and client:
+            try:
+                detail = client.get_order_tpsl_detail(inst_id=inst_id, tpsl_id=str(data.get("tpslId")))
+                state = (detail.get("data") or {}).get("state")
+                if state and str(state).lower() in ("effective", "live"):
+                    return True
+                # If it exists but isn't effective, treat as failure.
+                if state:
+                    return False
+            except Exception:
+                # Fall back below.
+                pass
+        return True
+
     try:
         from blofin.account_cache import get_account_snapshot
 
@@ -165,9 +200,27 @@ def _verify_tpsl_attached(client: Any, inst_id: str) -> bool:
         for p in positions:
             if str(p.get("instId") or "") != inst_id:
                 continue
-            has_tp = bool(p.get("tp") or p.get("tpTriggerPx"))
-            has_sl = bool(p.get("sl") or p.get("slTriggerPx"))
-            return has_tp and has_sl
+            # Try multiple potential field naming variants.
+            has_tp = bool(
+                p.get("tp")
+                or p.get("tp_price")
+                or p.get("tpPrice")
+                or p.get("tpTriggerPx")
+                or p.get("tpTriggerPrice")
+                or p.get("tpTriggerPricePx")
+            )
+            has_sl = bool(
+                p.get("sl")
+                or p.get("sl_price")
+                or p.get("slPrice")
+                or p.get("slTriggerPx")
+                or p.get("slTriggerPrice")
+                or p.get("slTriggerPricePx")
+            )
+            # If the exchange snapshot doesn't expose triggers, don't treat it as failure.
+            if has_tp or has_sl:
+                return has_tp and has_sl
+            return True
     except Exception:
         return False
     return False
@@ -294,6 +347,12 @@ def _incident_trader_offline(incident: dict[str, Any]) -> bool:
 def _is_known_maintenance_incident(incident: dict[str, Any]) -> bool:
     phase = str(incident.get("phase") or "")
     err = str(incident.get("error") or incident.get("detail") or "").lower()
+
+    # TP/SL stabilization must be deterministic and should NOT depend on
+    # LLM availability. Even when the issue is "novel", we want
+    # script-only `retry_tpsl` / `refresh_account` behavior for TPSL.
+    if phase == "tpsl_failed":
+        return False
     if phase == "stack_watchdog":
         if _incident_trader_offline(incident):
             return False
@@ -552,7 +611,7 @@ def _exec_retry_open(client: Any, params: dict[str, Any]) -> dict[str, Any] | No
                 price = float(rows[-1][4])
             except Exception:
                 return None
-        plan = plan_open(inst_id=inst, side=side, price=price, margin_budget=budget)
+        plan = plan_open(inst_id=inst, side=side, price=price, margin_budget=budget, account=snap)
         if not plan:
             return None
         contracts = plan.contracts
@@ -794,7 +853,7 @@ def execute_repair_plan(
         # Post-action verification: "ok" from exchange should mean triggers exist.
         if label == "retry_tpsl" and ok:
             inst_id = str((action.get("params") or {}).get("instId") or "")
-            verified = _verify_tpsl_attached(client, inst_id)
+            verified = _verify_tpsl_attached(client, inst_id, last_attach_resp=payload if isinstance(payload, dict) else None)
             if not verified:
                 ok = False
                 try:

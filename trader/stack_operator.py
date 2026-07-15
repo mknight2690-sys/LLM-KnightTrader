@@ -235,6 +235,17 @@ def reconcile_stack(*, allow_start_trader: bool = True) -> dict[str, Any]:
         or (_DASHBOARD_BOOT_TS and (time.time() - _DASHBOARD_BOOT_TS) < _BOOT_GRACE_SEC)
     )
 
+    # Reconcile Owl Swarm agents
+    try:
+        from trader.orchestrator import all_agent_statuses, start_all_agents
+        agent_statuses = all_agent_statuses()
+        offline = [a for a in agent_statuses if a.get("status") == "offline"]
+        if offline and not in_boot_grace and allow_start_trader:
+            start_all_agents()
+            actions.append(f"start_agents:{len(offline)}")
+    except Exception:
+        pass
+
     if allow_start_trader and not in_boot_grace:
         trader = stack.get("trader") or {}
         if trader.get("status") == "offline" and counts.get("trader", 0) == 0:
@@ -278,7 +289,7 @@ def _escalate_to_repair_llm(issues: list[str]) -> tuple[bool, str]:
 
         state = load_state()
         client = BlofinClient()
-        llm = LLMWrapper()
+        llm = LLMWrapper(provider_priority=("openrouter",), openrouter_models=["openai/gpt-oss-20b:free"])
         account = read_account_cached()
         incident = {
             "phase": "stack_operator",

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLM KnightTrader</title>
-  <link rel="stylesheet" href="/static/style.css?v=21" />
+  <link rel="stylesheet" href="/static/style.css?v=23" />
 </head>
 <body>
   <header>
@@ -44,9 +44,57 @@
       </form>
     </section>
 
+    <section class="panel agent-panel">
+      <h2>Agent Stack <span class="panel-hint">Owl Swarm · 14 agents</span></h2>
+      <div class="agent-categories" id="agent-categories"></div>
+      <div class="agent-list" id="agent-list"></div>
+      <div class="agent-controls">
+        <button id="start-all-agents" class="agent-btn">Start All</button>
+        <button id="stop-all-agents" class="agent-btn danger">Stop All</button>
+        <button id="refresh-agents" class="agent-btn secondary">Refresh</button>
+      </div>
+      <div class="rotation-bar" id="rotation-bar">
+        <span class="rotation-label">Rotation:</span>
+        <span id="rotation-key">—</span>
+        <span id="rotation-model">—</span>
+        <span id="rotation-failures">—</span>
+      </div>
+    </section>
+
+    <section class="panel agent-cli-panel">
+      <h2>Agent CLI <span class="panel-hint">GLM 5.1 · Systems Operator</span></h2>
+      <div id="agent-cli-log" class="chat-log"></div>
+      <form id="agent-cli-form" class="chat-form">
+        <input id="agent-cli-input" type="text" placeholder="Run commands, inspect files, manage processes..." autocomplete="off" />
+        <button type="submit">Run</button>
+      </form>
+    </section>
+
     <section class="panel activity-panel">
       <h2>Activity Log</h2>
       <div id="activity-log" class="scroll log"></div>
+    </section>
+
+    <section class="panel wide equity-panel">
+      <div class="equity-header">
+        <div>
+          <h2>Account Curve</h2>
+          <div class="equity-summary">
+            <span id="equityChartValue" class="equity-value">—</span>
+            <span id="equityChartChange" class="growth-change">—</span>
+            <span id="equityChartRange" class="equity-range">—</span>
+          </div>
+        </div>
+        <div class="equity-controls">
+          <button data-equity-range="1D" class="active">1D</button>
+          <button data-equity-range="1W">1W</button>
+          <button data-equity-range="1M">1M</button>
+          <button data-equity-range="3M">3M</button>
+          <button data-equity-range="ALL">ALL</button>
+        </div>
+      </div>
+      <canvas id="equityChartCanvas" class="equity-canvas"></canvas>
+      <div id="equityChartCaption" class="equity-caption">Tracking starts after the first balance snapshot</div>
     </section>
 
     <section class="panel">
@@ -80,6 +128,6 @@
     <span id="mission"></span>
   </footer>
 
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=23"></script>
 </body>
 </html>

@@ -69,7 +69,10 @@ def compute_tpsl_triggers(
         sl_r = min(sl_r, 0.015)
 
     # Small buffer so exchange accepts triggers vs last price.
-    buf = 0.002
+    # Exchange validates triggers vs the latest trading price (not necessarily
+    # the mark). Use a slightly larger buffer to reduce "tp/sl trigger price"
+    # rejections.
+    buf = 0.004
 
     if side == "buy":
         close_side = "sell"
@@ -106,6 +109,8 @@ def attach_tpsl_safe(
         mark_px = resolve_mark_price(client, inst_id, account=account)
 
     last: dict[str, Any] = {"code": "1", "msg": "no mark price"}
+    tpsl_id: str | None = None
+    verified_effective = False
     for attempt in range(max_attempts):
         if mark_px <= 0:
             mark_px = resolve_mark_price(client, inst_id, account=account)
@@ -116,6 +121,8 @@ def attach_tpsl_safe(
             side, mark_px, tp_pct=tp_pct, sl_pct=sl_pct, leverage=leverage
         )
         last = client.attach_tpsl(inst_id, None, close_side, contracts, tp, sl)
+        if isinstance(last, dict):
+            tpsl_id = (((last.get("data") or {}) or {}).get("tpslId") if isinstance(last.get("data"), dict) else None) or None
         if str(last.get("code")) in ("0", "0.0"):
             log_event(
                 "trade",
@@ -123,6 +130,26 @@ def attach_tpsl_safe(
                 f"mark={mark_px:.6f} tp={tp:.6f} sl={sl:.6f}",
                 {"instId": inst_id, "attempt": attempt + 1},
             )
+            # Verify acceptance is effective (BloFin can quickly cancel TPSL if triggers invalid)
+            if tpsl_id:
+                try:
+                    detail = client.get_order_tpsl_detail(inst_id=inst_id, tpsl_id=str(tpsl_id))
+                    state = (detail.get("data") or {}).get("state")
+                    if state and str(state).lower() not in ("effective", "live"):
+                        log_event(
+                            "trade",
+                            f"TP/SL not effective after attach; retry",
+                            f"inst={inst_id} tpslId={tpsl_id} state={state}",
+                            {"attempt": attempt + 1},
+                        )
+                        # Nudge mark slightly and retry.
+                        mark_px = mark_px * (0.998 if side == "buy" else 1.002)
+                        continue
+                    verified_effective = True
+                except Exception:
+                    # If detail verification fails, keep exchange code=0 as acceptance signal.
+                    pass
+            last["_tpsl_effective"] = verified_effective
             return last
 
         _, err = client.order_rejected(last)
@@ -134,11 +161,33 @@ def attach_tpsl_safe(
             {"mark": mark_px, "tp": tp, "sl": sl},
         )
 
-        if side == "buy" and "lower" in err_l:
-            mark_px = resolve_mark_price(client, inst_id, account=account) or mark_px * 0.998
-        elif side == "sell" and "higher" in err_l:
-            mark_px = resolve_mark_price(client, inst_id, account=account) or mark_px * 1.002
+        # BloFin commonly responds with:
+        # - "TP trigger price should be higher than the latest trading price"
+        # - "TP trigger price should be lower than the latest trading price"
+        # - Similar wording for SL
+        #
+        # We fix this by nudging the base price (mark_px) in the direction that
+        # moves the relevant trigger across the constraint.
+        #
+        # For buy:
+        #   TP = mark * (1 + ...), SL = mark * (1 - ...)
+        # For sell:
+        #   TP = mark * (1 - ...), SL = mark * (1 + ...)
+        if "tp trigger price" in err_l or "tp trigger" in err_l:
+            if "higher" in err_l:
+                # Need tpTrigger > lastTradePx
+                mark_px = (resolve_mark_price(client, inst_id, account=account) or mark_px) * (1.005 if side == "buy" else 0.995)
+            elif "lower" in err_l:
+                mark_px = (resolve_mark_price(client, inst_id, account=account) or mark_px) * (0.995 if side == "buy" else 1.005)
+        elif "sl trigger price" in err_l or "sl trigger" in err_l:
+            if "higher" in err_l:
+                mark_px = (resolve_mark_price(client, inst_id, account=account) or mark_px) * 1.005
+            elif "lower" in err_l:
+                mark_px = (resolve_mark_price(client, inst_id, account=account) or mark_px) * 0.995
         else:
-            mark_px = resolve_mark_price(client, inst_id, account=account) or mark_px
+            # Generic fallback: refresh mark, otherwise a tiny nudge.
+            mark_px = resolve_mark_price(client, inst_id, account=account) or (mark_px * (1.001 if side == "buy" else 0.999))
 
+    if isinstance(last, dict):
+        last["_tpsl_effective"] = False
     return last

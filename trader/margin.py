@@ -50,12 +50,38 @@ def _max_leverage_for_inst(inst: dict[str, Any]) -> int:
     return max(1, min(cap, TRADE_MAX_LEVERAGE))
 
 
-def _leverage_steps(inst: dict[str, Any]) -> list[int]:
-    cap = _max_leverage_for_inst(inst)
+def _responsible_cap(margin_budget: float, account: dict[str, Any] | None) -> int:
+    """Cap leverage based on how large this position's margin slice is vs equity.
+
+    Smaller allocations can run higher leverage; larger allocations stay conservative.
+    The cap is a soft default — plan_open may exceed it when required to afford the
+    instrument's minimum contract margin.
+    """
+    if not account:
+        return TRADE_MAX_LEVERAGE
+    equity = float(account.get("equity") or account.get("available") or 0)
+    if equity <= 0:
+        return TRADE_MAX_LEVERAGE
+    ratio = float(margin_budget) / equity
+    if ratio >= 0.20:
+        cap = 10
+    elif ratio >= 0.10:
+        cap = 15
+    elif ratio >= 0.05:
+        cap = 20
+    elif ratio >= 0.02:
+        cap = 30
+    else:
+        cap = 50
+    return max(3, min(cap, TRADE_MAX_LEVERAGE))
+
+
+def _leverage_steps(inst: dict[str, Any], cap: int | None = None) -> list[int]:
+    cap = min(cap or TRADE_MAX_LEVERAGE, _max_leverage_for_inst(inst))
     steps = [lev for lev in LEVERAGE_LADDER if lev <= cap]
     if cap not in steps:
         steps.append(cap)
-    return sorted(set(steps))
+    return sorted(set(steps), reverse=True)
 
 
 def plan_open(
@@ -65,6 +91,7 @@ def plan_open(
     price: float,
     margin_budget: float,
     size_contracts: int | float | None = None,
+    account: dict[str, Any] | None = None,
 ) -> OpenPlan | None:
     inst = get_instrument(inst_id)
     if not inst or price <= 0 or margin_budget <= 0:
@@ -76,12 +103,27 @@ def plan_open(
     contracts = max(min_size, contracts)
 
     budget = float(margin_budget)
+    inst_cap = _max_leverage_for_inst(inst)
+    soft_cap = _responsible_cap(budget, account)
+    all_steps = _leverage_steps(inst, inst_cap)
+
     chosen_lev: int | None = None
-    for lev in _leverage_steps(inst):
-        req = margin_for(min_size, price, ct_val, lev)
-        if req <= budget:
+    # Prefer leverage up to the responsible soft cap.
+    for lev in all_steps:
+        if lev > soft_cap:
+            continue
+        if margin_for(min_size, price, ct_val, lev) <= budget:
             chosen_lev = lev
             break
+    # If the min contract margin cannot be met within the soft cap, raise leverage
+    # just enough to afford the position (still capped by instrument + TRADE_MAX_LEVERAGE).
+    if chosen_lev is None:
+        for lev in all_steps:
+            if lev <= soft_cap:
+                continue
+            if margin_for(min_size, price, ct_val, lev) <= budget:
+                chosen_lev = lev
+                break
 
     if chosen_lev is None:
         return None
@@ -111,7 +153,7 @@ def plan_open(
     )
 
 
-def annotate_scan_row(row: dict[str, Any], margin_budget: float) -> dict[str, Any]:
+def annotate_scan_row(row: dict[str, Any], margin_budget: float, account: dict[str, Any] | None = None) -> dict[str, Any]:
     inst = str(row.get("instId") or "")
     price = float(row.get("price") or 0)
     side = row.get("side")
@@ -119,7 +161,13 @@ def annotate_scan_row(row: dict[str, Any], margin_budget: float) -> dict[str, An
     if not inst or not side or price <= 0:
         out["affordable"] = False
         return out
-    plan = plan_open(inst_id=inst, side=str(side), price=price, margin_budget=margin_budget)
+    plan = plan_open(
+        inst_id=inst,
+        side=str(side),
+        price=price,
+        margin_budget=margin_budget,
+        account=account,
+    )
     if not plan:
         out["affordable"] = False
         return out
@@ -149,7 +197,7 @@ def affordable_setups(
             continue
         sizing = fn(account, row)
         budget = float(sizing.get("margin_budget") or 0)
-        annotated = annotate_scan_row(row, budget)
+        annotated = annotate_scan_row(row, budget, account)
         if annotated.get("affordable"):
             annotated["sizing"] = sizing
             rows.append(annotated)
@@ -184,7 +232,13 @@ def pick_best_affordable(
                 from trader.sizing import margin_budget_for_setup
 
                 margin_budget = float(margin_budget_for_setup(account).get("margin_budget") or 0)
-        return plan_open(inst_id=inst_id, side=side, price=price, margin_budget=float(margin_budget))
+        return plan_open(
+            inst_id=inst_id,
+            side=side,
+            price=price,
+            margin_budget=float(margin_budget),
+            account=account,
+        )
 
     setups = affordable_setups(scan, account)
     if not setups:
@@ -196,6 +250,7 @@ def pick_best_affordable(
         side=str(best["side"]),
         price=float(best["price"]),
         margin_budget=budget,
+        account=account,
     )
 
 

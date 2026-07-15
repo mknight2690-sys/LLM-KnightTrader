@@ -369,6 +369,12 @@ def kill_entire_stack(exclude_pids: set[int] | None = None) -> list[int]:
             if _kill_pid(pid, tree=True):
                 killed.append(pid)
 
+    # Stop orchestrated swarm agents
+    try:
+        from trader.orchestrator import stop_all_agents
+        stop_all_agents()
+    except Exception:
+        pass
     _clear_stack_pid_files()
     return killed
 
@@ -579,6 +585,12 @@ def start_single_trader() -> dict[str, Any]:
                 stable_since = time.time()
             elif stable_since and time.time() - stable_since >= 4.0:
                 TRADER_PID_FILE.write_text(str(candidate), encoding="utf-8")
+                # Trader stable — also ensure swarm agents are running (non-blocking)
+                try:
+                    from trader.orchestrator import start_all_agents
+                    start_all_agents()
+                except Exception:
+                    pass
                 return {"ok": True, "pid": candidate, "python": python_bin}
         else:
             stable_since = None
@@ -603,6 +615,12 @@ def start_single_trader() -> dict[str, Any]:
     candidate = owner or (collapsed[0] if len(collapsed) == 1 else None)
     if candidate and _pid_alive(candidate):
         TRADER_PID_FILE.write_text(str(candidate), encoding="utf-8")
+        # Trader stable — also ensure swarm agents are running (non-blocking)
+        try:
+            from trader.orchestrator import start_all_agents
+            start_all_agents()
+        except Exception:
+            pass
         return {"ok": True, "pid": candidate, "python": python_bin}
 
     try:

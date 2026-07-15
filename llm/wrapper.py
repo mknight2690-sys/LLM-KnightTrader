@@ -14,18 +14,11 @@ from typing import Any
 from activity_log import log_event
 from config import APP_NAME, LLM_HTTP_TIMEOUT_SEC
 from credentials import discover_llm_env_keys, discover_openrouter_keys
-
-FREE_OPENROUTER_MODELS = [
-    "google/gemma-4-26b-a4b-it:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "deepseek/deepseek-r1:free",
-    "openrouter/free",
-]
+from llm.model_registry import FREE_OPENROUTER_MODELS, resolve_model_for_agent, _RotationState
 
 SKIP_MODEL_SUBSTRINGS = ("content-safety", "moderation", "north-mini")
-GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+GROQ_MODELS = []
+GEMINI_MODELS = []
 
 
 @dataclass
@@ -38,11 +31,27 @@ class LLMResponse:
 
 
 class LLMWrapper:
-    """Round-robin OpenRouter free models × API keys, with Groq/Gemini fallback."""
+    """OpenRouter free-model rotation with per-agent pinned models + 7-key failover."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        openrouter_models: list[str] | None = None,
+        provider_priority: tuple[str, ...] = ("nvidia", "openrouter", "groq", "gemini"),
+        pool_name: str | None = None,
+        nvidia_model: str = "z-ai/glm-5.1",
+    ) -> None:
         self._or_keys = discover_openrouter_keys()
         self._env_keys = discover_llm_env_keys()
+        # If pool_name matches an agent in the registry, pin to that agent's model.
+        self._pool_name = pool_name
+        if pool_name and "openrouter" in provider_priority:
+            pinned = resolve_model_for_agent(pool_name)
+            self._openrouter_models = [pinned]
+        else:
+            self._openrouter_models = openrouter_models or FREE_OPENROUTER_MODELS
+        self._provider_priority = provider_priority
+        self._nvidia_model = nvidia_model
         self._cooldown: dict[str, float] = {}
         self._or_key_idx = 0
         self._model_idx = 0
@@ -51,7 +60,8 @@ class LLMWrapper:
             log_event(
                 "system",
                 "OpenRouter pool ready",
-                f"{len(self._or_keys)} key(s), {len(FREE_OPENROUTER_MODELS)} free models",
+                f"{len(self._or_keys)} key(s), pinned={pool_name or 'none'}",
+                {"pool": self._pool_name, "models": self._openrouter_models},
             )
 
     def _cooling(self, key: str, seconds: float = 90.0) -> None:
@@ -124,6 +134,7 @@ class LLMWrapper:
                 {"Authorization": f"Bearer {self._or_keys[0]}", "Content-Type": "application/json"},
                 method="GET",
             )
+            allowed = set(self._openrouter_models)
             free = [
                 m["id"]
                 for m in data.get("data", [])
@@ -134,8 +145,10 @@ class LLMWrapper:
                     or m.get("pricing", {}).get("prompt") in ("0", 0, "0.0")
                 )
             ]
-            if free:
-                self._extra_models = free[:8]
+            # Strict mode: never add models outside the configured openrouter_models.
+            filtered = [m for m in free if m in allowed]
+            if filtered:
+                self._extra_models = filtered[:8]
         except Exception:
             pass
 
@@ -146,64 +159,76 @@ class LLMWrapper:
         *,
         json_mode: bool = False,
     ) -> LLMResponse:
-        preferred = [
+        primary = [
             m
-            for m in dict.fromkeys(self._extra_models + FREE_OPENROUTER_MODELS)
+            for m in dict.fromkeys(self._extra_models + self._openrouter_models)
             if not any(s in m.lower() for s in SKIP_MODEL_SUBSTRINGS)
         ]
-        for _ in range(len(preferred) * max(1, len(self._or_keys))):
-            key = self._next_or_key()
-            if not key:
-                break
-            model = preferred[self._model_idx % len(preferred)]
-            self._model_idx += 1
-            tag = f"or:{key[:12]}:{model}"
-            if self._is_cooled(tag):
-                continue
-            t0 = time.time()
-            try:
-                payload: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": 0.4,
-                }
-                if json_mode:
-                    payload["response_format"] = {"type": "json_object"}
-                data = self._http_json(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    payload,
-                    {
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "http://localhost:8765",
-                        "X-Title": APP_NAME,
-                    },
-                )
-                text = self._extract_text(data)
-                low = text.lower()
-                if (
-                    "unsafe" in low
-                    or "unauthorized advice" in low
-                    or low.startswith("user safety:")
-                    or "content-safety" in model.lower()
-                ):
-                    raise RuntimeError("safety refusal")
-                if json_mode and not self._looks_like_json(text):
-                    raise RuntimeError("non-json response")
-                latency = (time.time() - t0) * 1000
-                log_event("llm", f"OpenRouter {model}", text[:240], {"provider": "openrouter", "model": model})
-                return LLMResponse(text=text, provider="openrouter", model=model, latency_ms=latency, raw=data)
-            except urllib.error.HTTPError as exc:
-                if exc.code in (429, 402, 403, 404):
-                    if exc.code == 404:
-                        self._refresh_openrouter_models()
-                    self._cooling(tag, 120.0 if exc.code == 429 else 45.0)
+        fallback = "openai/gpt-oss-20b:free"
+        batches = [primary]
+        if fallback not in primary:
+            batches.append([fallback])
+
+        for batch in batches:
+            for _ in range(max(1, len(self._or_keys))):
+                key = self._next_or_key()
+                if not key:
+                    break
+                model = batch[self._model_idx % len(batch)]
+                self._model_idx += 1
+                tag = f"or:{key[:12]}:{model}"
+                if self._is_cooled(tag):
                     continue
-                raise
-            except Exception:
-                self._cooling(tag, 30.0)
-                continue
+                t0 = time.time()
+                try:
+                    payload: dict[str, Any] = {
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": 0.4,
+                    }
+                    if json_mode:
+                        payload["response_format"] = {"type": "json_object"}
+                    data = self._http_json(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        payload,
+                        {
+                            "Authorization": f"Bearer {key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "http://localhost:8765",
+                            "X-Title": APP_NAME,
+                        },
+                    )
+                    text = self._extract_text(data)
+                    low = text.lower()
+                    if (
+                        "unsafe" in low
+                        or "unauthorized advice" in low
+                        or low.startswith("user safety:")
+                        or "content-safety" in model.lower()
+                    ):
+                        raise RuntimeError("safety refusal")
+                    if json_mode and not self._looks_like_json(text):
+                        raise RuntimeError("non-json response")
+                    latency = (time.time() - t0) * 1000
+                    log_event(
+                        "llm",
+                        f"OpenRouter {model}",
+                        text[:240],
+                        {"provider": "openrouter", "model": model, "pool": self._pool_name},
+                    )
+                    return LLMResponse(text=text, provider="openrouter", model=model, latency_ms=latency, raw=data)
+                except urllib.error.HTTPError as exc:
+                    if exc.code in (429, 402, 403, 404):
+                        self._cooling(tag, 120.0 if exc.code == 429 else 45.0)
+                        # 7-key rotation: record failure, try next key/model
+                        rot = _RotationState()
+                        rot.record_failure(model)
+                        continue
+                    raise
+                except Exception:
+                    self._cooling(tag, 30.0)
+                    continue
         raise RuntimeError("All OpenRouter keys/models exhausted")
 
     def _try_groq(
@@ -236,7 +261,7 @@ class LLMWrapper:
                 )
                 text = self._extract_text(data)
                 latency = (time.time() - t0) * 1000
-                log_event("llm", f"Groq {model}", text[:240], {"provider": "groq", "model": model})
+                log_event("llm", f"Groq {model}", text[:240], {"provider": "groq", "model": model, "pool": self._pool_name})
                 return LLMResponse(text=text, provider="groq", model=model, latency_ms=latency, raw=data)
             except urllib.error.HTTPError as exc:
                 if exc.code == 429:
@@ -267,7 +292,7 @@ class LLMWrapper:
                 )
                 text = self._extract_text(data)
                 latency = (time.time() - t0) * 1000
-                log_event("llm", f"Gemini {model}", text[:240], {"provider": "gemini", "model": model})
+                log_event("llm", f"Gemini {model}", text[:240], {"provider": "gemini", "model": model, "pool": self._pool_name})
                 return LLMResponse(text=text, provider="gemini", model=model, latency_ms=latency, raw=data)
             except urllib.error.HTTPError as exc:
                 if exc.code == 429:
@@ -275,6 +300,57 @@ class LLMWrapper:
                     continue
                 raise
         raise RuntimeError("Gemini rate limited")
+
+    def _try_nvidia(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        *,
+        json_mode: bool = False,
+    ) -> LLMResponse:
+        """NVIDIA NIM API — per-instance model via self._nvidia_model."""
+        key = self._env_keys.get("NVIDIA_API_KEY")
+        if not key:
+            raise RuntimeError("no nvidia_api_key")
+        model = self._nvidia_model
+        tag = f"nvidia:{model}"
+        if self._is_cooled(tag):
+            raise RuntimeError(f"nvidia {model} on cooldown")
+        t0 = time.time()
+        try:
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.4,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            data = self._http_json(
+                "https://integrate.api.nvidia.com/v1/chat/completions",
+                payload,
+                {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            text = self._extract_text(data)
+            latency = (time.time() - t0) * 1000
+            log_event(
+                "llm",
+                f"NVIDIA {model}",
+                text[:240],
+                {"provider": "nvidia", "model": model, "pool": self._pool_name},
+            )
+            return LLMResponse(text=text, provider="nvidia", model=model, latency_ms=latency, raw=data)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 402, 403, 404):
+                self._cooling(tag, 120.0 if exc.code == 429 else 45.0)
+                raise RuntimeError(f"nvidia rate limited ({exc.code})")
+            raise
+        except Exception:
+            self._cooling(tag, 30.0)
+            raise
 
     def chat(
         self,
@@ -289,9 +365,19 @@ class LLMWrapper:
             full_messages = [{"role": "system", "content": system}] + full_messages
 
         errors: list[str] = []
-        for fn in (self._try_openrouter, self._try_groq, self._try_gemini):
+        ordered: list[Any] = []
+        if "nvidia" in self._provider_priority:
+            ordered.append(self._try_nvidia)
+        if "openrouter" in self._provider_priority:
+            ordered.append(self._try_openrouter)
+        if "groq" in self._provider_priority:
+            ordered.append(self._try_groq)
+        if "gemini" in self._provider_priority:
+            ordered.append(self._try_gemini)
+
+        for fn in ordered:
             try:
-                if fn in (self._try_openrouter, self._try_groq):
+                if fn in (self._try_nvidia, self._try_openrouter, self._try_groq):
                     return fn(full_messages, max_tokens, json_mode=json_mode)
                 return fn(full_messages, max_tokens)
             except Exception as exc:
@@ -313,11 +399,13 @@ class LLMWrapper:
             full_messages = [{"role": "system", "content": system}] + full_messages
 
         routes: list[tuple[str, Any]] = []
-        if self._or_keys:
+        if "nvidia" in self._provider_priority and self._env_keys.get("NVIDIA_API_KEY"):
+            routes.append(("nvidia", lambda: self._try_nvidia(full_messages, max_tokens, json_mode=json_mode)))
+        if "openrouter" in self._provider_priority and self._or_keys:
             routes.append(("openrouter", lambda: self._try_openrouter(full_messages, max_tokens, json_mode=json_mode)))
-        if self._env_keys.get("GROQ_API_KEY"):
+        if "groq" in self._provider_priority and self._env_keys.get("GROQ_API_KEY"):
             routes.append(("groq", lambda: self._try_groq(full_messages, max_tokens, json_mode=json_mode)))
-        if self._env_keys.get("GEMINI_API_KEY") or self._env_keys.get("GOOGLE_API_KEY"):
+        if "gemini" in self._provider_priority and (self._env_keys.get("GEMINI_API_KEY") or self._env_keys.get("GOOGLE_API_KEY")):
             routes.append(("gemini", lambda: self._try_gemini(full_messages, max_tokens)))
 
         if not routes:
@@ -349,10 +437,14 @@ class LLMWrapper:
 
     def status(self) -> dict[str, Any]:
         return {
+            "nvidia_key": bool(self._env_keys.get("NVIDIA_API_KEY")),
             "openrouter_keys": len(self._or_keys),
             "optional_keys": list(self._env_keys.keys()),
             "fallback_models": FREE_OPENROUTER_MODELS,
             "cooldown_sec": self._min_cooldown_remaining(),
+            "openrouter_models": self._openrouter_models,
+            "pool": self._pool_name,
+            "provider_priority": list(self._provider_priority),
         }
 
     def _min_cooldown_remaining(self) -> float:

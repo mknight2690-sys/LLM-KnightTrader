@@ -110,7 +110,7 @@ def discover_llm_env_keys() -> dict[str, str]:
     or_keys = discover_openrouter_keys()
     if or_keys:
         out["OPENROUTER_API_KEY"] = or_keys[0]
-    for name in ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+    for name in ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "NVIDIA_API_KEY"):
         val = os.environ.get(name, "").strip()
         if val:
             out[name] = val
@@ -122,4 +122,14 @@ def discover_llm_env_keys() -> dict[str, str]:
                     val = line.split("=", 1)[1].strip().strip('"').strip("'")
                     if val:
                         out[name] = val
+    # Also check Documents for NVIDIA API Key file (same as MK AI Trader)
+    if "NVIDIA_API_KEY" not in out:
+        nvidia_file = Path.home() / "OneDrive" / "Documents" / "Nvidia API Key.txt"
+        if nvidia_file.is_file():
+            try:
+                key = nvidia_file.read_text(encoding="utf-8").strip()
+                if key:
+                    out["NVIDIA_API_KEY"] = key
+            except Exception:
+                pass
     return out

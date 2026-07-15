@@ -107,6 +107,9 @@ def agent_main(
     label: str,
     run_cycle_fn,
     interval_sec: float = 30.0,
+    *,
+    llm_pool_name: str | None = None,
+    openrouter_model: str = "openai/gpt-oss-20b:free",
 ) -> None:
     _ensure_log_dir()
     if not _acquire_agent_lock(name):
@@ -130,7 +133,22 @@ def agent_main(
     client = BlofinClient()
     log(name, "Agent started", f"interval={interval_sec}s")
 
-    llm = LLMWrapper()
+    llm = LLMWrapper(
+        provider_priority=("openrouter",),
+        pool_name=llm_pool_name or name,
+        nvidia_model=openrouter_model,
+    )
+
+    # One-time startup smoke test: confirm OpenRouter is reachable.
+    try:
+        llm.chat(
+            messages=[{"role": "user", "content": "Return OK"}],
+            system="Return only the word OK.",
+            max_tokens=5,
+        )
+        log(name, "Startup LLM smoke OK", "openrouter")
+    except Exception as exc:
+        log_warn(name, "Startup LLM smoke FAILED", str(exc)[:220])
     # IMPORTANT: repair LLM expects the same state schema as the main trader.
     # Use trader.state.load_state() so keys like `research_notes` always exist
     # (prevents KeyError crash loops during llm_triage_and_repair).

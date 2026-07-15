@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,16 +25,32 @@ from blofin.account_cache import bootstrap_account_cache, read_account_cached, r
 from blofin.client import BlofinClient
 from config import APP_NAME, CHAT_AGENT_NAME, DASHBOARD_HOST, DASHBOARD_PORT, MISSION_PROMPT, TARGET_EQUITY
 from llm.wrapper import LLMWrapper
-from trader.prompts import CHAT_SYSTEM
+from trader.prompts import CHAT_SYSTEM, REPAIR_CHAT_SYSTEM
 from trader.directives import operator_instructions
 from trader.baseline import parse_baseline_command, progress_summary, set_user_baseline
+from trader.equity_history import append_equity_snapshot, get_equity_history_for_api
 from trader.learning import lessons_digest
 from trader.order_guard import execution_context
 from trader.stack_control import restart_traders, stack_status
+from trader.orchestrator import (
+    AGENT_REGISTRY,
+    agent_exists,
+    agent_status,
+    all_agent_statuses,
+    all_native_statuses,
+    get_agent_by_name,
+    get_full_stack_status,
+    start_agent,
+    stop_agent,
+)
+from llm.model_registry import get_rotation_state
 from trader.stack_operator import run_operator_cycle
 from trader.stack_watchdog import diagnose_stack, mark_dashboard_boot, run_stack_watchdog
 from blofin.account_cache import guard_account_stream
 from trader.state import append_chat, append_user_directive, load_state, reload_chat_fields, save_state
+
+# Agent CLI integration
+import agent_cli
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -76,7 +93,6 @@ app = FastAPI(title=f"{APP_NAME} Dashboard", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 _client: BlofinClient | None = None
-_llm: LLMWrapper | None = None
 _ws_clients: set[WebSocket] = set()
 _last_tail_ts: float = 0.0
 _main_loop: asyncio.AbstractEventLoop | None = None
@@ -89,11 +105,28 @@ def _get_client() -> BlofinClient:
     return _client
 
 
-def _get_llm() -> LLMWrapper:
-    global _llm
-    if _llm is None:
-        _llm = LLMWrapper()
-    return _llm
+def _build_chat_context(state: dict[str, Any], account: dict[str, Any]) -> str:
+    account_brief = {
+        "equity": account.get("equity"),
+        "available": account.get("available"),
+        "positions_count": len(account.get("positions") or []),
+        "upl_total": account.get("upl_total"),
+        "stale": account.get("stale"),
+        "rate_limited": account.get("rate_limited"),
+    }
+    return json.dumps(
+        {
+            "account": account_brief,
+            "hermes_memory": {"lessons": lessons_digest(state, limit=12)},
+            "execution_guard": execution_context(state, account) if "error" not in account else {},
+            "last_decision": state.get("last_decision"),
+            "recent_research": state.get("research_notes", [])[-3:],
+            "recent_trades": state.get("trades", [])[-3:],
+            "operator_instructions": operator_instructions(state),
+            "recent_chat_thread": state.get("chat_history", [])[-12:],
+        },
+        indent=2,
+    )
 
 
 async def _broadcast_json(payload: dict[str, Any]) -> None:
@@ -138,6 +171,12 @@ class BaselineSetRequest(BaseModel):
     reason: str = "user set via dashboard"
 
 
+class AgentCliRequest(BaseModel):
+    """Run a single Agent CLI turn."""
+    prompt: str
+    auto: bool = False
+
+
 def _apply_user_baseline(
     state: dict[str, Any],
     account: dict[str, Any],
@@ -153,7 +192,7 @@ def _apply_user_baseline(
     log_event(
         "system",
         "Baseline set by user",
-        f"${bl.get('baseline_equity'):.4f} — Δ now vs current ${float(account.get('equity') or 0):.4f}",
+        f"${bl.get('baseline_equity'):.2f} — Δ now vs current ${float(account.get('equity') or 0):.2f}",
         {"performance_baseline": summary},
     )
     return summary
@@ -167,8 +206,6 @@ def _bootstrap_account_cache() -> None:
 
 async def _stack_watchdog_loop() -> None:
     """Full-time stack operator — reconcile processes + account repair + LLM escalation."""
-    # Operator cycle runs every ~15s. It handles process dedupe, trader start,
-    # monitor/watcher cleanup, and escalates to repair LLM if stuck.
     while True:
         await asyncio.sleep(15)
         try:
@@ -200,6 +237,10 @@ async def _account_stream_loop() -> None:
             if tick % 6 == 0:
                 result = await asyncio.to_thread(guard_account_stream)
                 account = result.get("account") or await asyncio.to_thread(read_account_cached)
+                # Record equity snapshot for account curve
+                equity_val = account.get("equity")
+                if equity_val and equity_val > 0:
+                    await asyncio.to_thread(append_equity_snapshot, equity_val)
                 payload: dict[str, Any] = {
                     "type": "account_update",
                     "account": account,
@@ -298,6 +339,12 @@ async def api_account(force: bool = False) -> dict[str, Any]:
     return {"account": account}
 
 
+@app.get("/api/equity")
+async def api_equity() -> dict[str, Any]:
+    """Return equity history for the account curve chart."""
+    return await asyncio.to_thread(get_equity_history_for_api)
+
+
 @app.post("/api/baseline/set")
 async def api_baseline_set(req: BaselineSetRequest) -> dict[str, Any]:
     state = load_state()
@@ -321,7 +368,7 @@ async def api_baseline_set(req: BaselineSetRequest) -> dict[str, Any]:
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     state = load_state()
-    llm = _get_llm()
+    llm = LLMWrapper(provider_priority=("openrouter",), pool_name="dashboard_status", openrouter_models=["openai/gpt-oss-20b:free"])
     account = await asyncio.to_thread(read_account_cached)
     return {
         "app_name": APP_NAME,
@@ -379,8 +426,6 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
     log_event("chat", "You", req.message, {"status": "received", "wired_to_trader": True})
 
     def _is_patch_confirmation_message(msg: str) -> str | None:
-        # User explicitly confirms a dashboard patch fingerprint so repair techs may apply it.
-        # Expected: confirm:<fingerprint>
         m = (msg or "").strip()
         low = m.lower()
         if not (low.startswith("confirm:") or low.startswith("confirm ")):
@@ -391,8 +436,12 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
 
     def _is_manual_repair_message(msg: str) -> bool:
         m = (msg or "").strip().lower()
-        # Explicit "repair/stop trading and fix" commands to avoid accidental trading actions.
-        return m.startswith("repair:") or m.startswith("fix:") or m.startswith("repair ") or m.startswith("fix ")
+        return (
+            m.startswith("repair:")
+            or m.startswith("fix:")
+            or m.startswith("repair ")
+            or m.startswith("fix ")
+        )
 
     confirmed_fp = _is_patch_confirmation_message(req.message)
     if confirmed_fp:
@@ -406,18 +455,6 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
         append_chat(state, "assistant", reply)
         save_state(state)
         return {"reply": reply, "dashboard_patch_confirmed": confirmed_fp}
-
-    if _is_manual_repair_message(req.message):
-        # Queue: repair techs watch for this in the activity log.
-        log_event("system", "Manual repair request", req.message[:2000], {"source": "dashboard_chat"})
-        reply = (
-            "Repair request queued for the autonomous repair techs. "
-            "Watch the Activity Log and repair_* logs for progress."
-        )
-        append_chat(state, "assistant", reply)
-        save_state(state)
-        log_event("chat", CHAT_AGENT_NAME, reply, {"status": "queued_manual_repair"})
-        return {"reply": reply, "queued_manual_repair": True}
 
     try:
         from blofin.account_cache import read_account_cached
@@ -440,9 +477,9 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
             ch = summary.get("equity_change_usd")
             pct = summary.get("equity_change_pct")
             reply = (
-                f"Baseline set to **${eq:.4f}**. Baseline Δ is now "
-                f"**{'+' if (ch or 0) >= 0 else ''}${ch:.4f}** ({'+' if (pct or 0) >= 0 else ''}{pct:.1f}%) "
-                f"vs current equity **${float(summary.get('current_equity') or 0):.4f}**."
+                f"Baseline set to **${eq:.2f}**. Baseline Δ is now "
+                f"**{'+' if (ch or 0) >= 0 else ''}${ch:.2f}** ({'+' if (pct or 0) >= 0 else ''}{pct:.1f}%) "
+                f"vs current equity **${float(summary.get('current_equity') or 0):.2f}**."
             )
             append_chat(state, "assistant", reply)
             save_state(state)
@@ -454,69 +491,119 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
             save_state(state)
             return {"reply": reply, "error": str(exc)}
 
-    account_brief = {
-        "equity": account.get("equity"),
-        "available": account.get("available"),
-        "positions": account.get("positions"),
-        "upl_total": account.get("upl_total"),
-        "stale": account.get("stale"),
-        "rate_limited": account.get("rate_limited"),
-    }
-    ops = operator_instructions(state)
-    context = json.dumps(
-        {
-            "account": account_brief,
-            "hermes_memory": {"lessons": lessons_digest(state, limit=12)},
-            "execution_guard": execution_context(state, account) if "error" not in account else {},
-            "last_decision": state.get("last_decision"),
-            "recent_research": state.get("research_notes", [])[-3:],
-            "recent_trades": state.get("trades", [])[-3:],
-            "operator_instructions": ops,
-            "recent_chat_thread": state.get("chat_history", [])[-12:],
-        },
-        indent=2,
-    )
-    llm = _get_llm()
-    log_event("chat", CHAT_AGENT_NAME, "Thinking…", {"status": "thinking", "message": req.message[:200]})
-    if hasattr(llm, "wait_for_provider"):
-        llm.wait_for_provider(max_wait=None)
-    chat_fn = llm.chat_race if hasattr(llm, "chat_race") else llm.chat
-    response = chat_fn(
-        [
+    # --- Repair / fix messages go straight to the repair tech LLMs ---
+    if _is_manual_repair_message(req.message):
+        log_event("system", "Manual repair request", req.message[:2000], {"source": "dashboard_chat"})
+        log_event("chat", CHAT_AGENT_NAME, "Repair tech is thinking…", {"status": "thinking"})
+        try:
+            llm = LLMWrapper(provider_priority=("openrouter",), pool_name="dashboard_repair", openrouter_models=["openai/gpt-oss-20b:free"])
+            resp = llm.chat(
+                messages=[{"role": "user", "content": req.message}],
+                system=REPAIR_CHAT_SYSTEM,
+                max_tokens=400,
+            )
+            reply = resp.text.strip() or (
+                "Repair request received. I will inspect the stack and update the activity log."
+            )
+            append_chat(state, "assistant", reply)
+            save_state(state)
+            log_event(
+                "chat",
+                CHAT_AGENT_NAME,
+                reply,
+                {
+                    "status": "complete",
+                    "provider": resp.provider,
+                    "model": resp.model,
+                    "latency_ms": round(resp.latency_ms, 1),
+                    "queued_manual_repair": True,
+                },
+            )
+            return {
+                "reply": reply,
+                "provider": resp.provider,
+                "model": resp.model,
+                "latency_ms": resp.latency_ms,
+                "queued_manual_repair": True,
+            }
+        except Exception as exc:
+            log_event("error", "Repair chat LLM failed", str(exc)[:220], {"source": "dashboard_chat"})
+            reply = (
+                "Repair request queued for the autonomous repair techs. "
+                "Watch the Activity Log and repair_* logs for progress. "
+                f"(LLM error: {exc})"
+            )
+            append_chat(state, "assistant", reply)
+            save_state(state)
+            return {"reply": reply, "queued_manual_repair": True}
+
+    # --- Normal chat: route to the trading/chat LLM (Gemini 2.5 Pro primary) ---
+    log_event("chat", CHAT_AGENT_NAME, "Thinking…", {"status": "thinking"})
+    try:
+        llm = LLMWrapper(provider_priority=("openrouter",), pool_name="dashboard_chat", openrouter_models=["openai/gpt-oss-20b:free"])
+        context = _build_chat_context(state, account)
+        t0 = time.time()
+        resp = llm.chat(
+            messages=[
+                {"role": "user", "content": f"{req.message}\n\n--- context ---\n{context}"}
+            ],
+            system=CHAT_SYSTEM,
+            max_tokens=700,
+        )
+        latency_ms = (time.time() - t0) * 1000
+        reply = resp.text.strip() or "I thought about that but have nothing to add."
+        append_chat(state, "assistant", reply)
+        save_state(state)
+        log_event(
+            "chat",
+            CHAT_AGENT_NAME,
+            reply,
             {
-                "role": "user",
-                "content": (
-                    f"Context:\n{context}\n\n"
-                    f"User message: {req.message}\n\n"
-                    "Reply as the live trading agent. Acknowledge the user's instruction and confirm "
-                    "it is saved to operator_instructions for the autonomous trader loop."
-                ),
+                "status": "complete",
+                "provider": resp.provider,
+                "model": resp.model,
+                "latency_ms": round(latency_ms, 1),
             },
-        ],
-        system=CHAT_SYSTEM,
-        max_tokens=2000,
-    )
-    append_chat(state, "assistant", response.text)
-    save_state(state)
-    log_event(
-        "chat",
-        CHAT_AGENT_NAME,
-        response.text,
-        {"provider": response.provider, "model": response.model, "status": "complete"},
-    )
-    return {
-        "reply": response.text,
-        "provider": response.provider,
-        "model": response.model,
-        "latency_ms": response.latency_ms,
-        "status": "complete",
-    }
+        )
+        return {
+            "reply": reply,
+            "provider": resp.provider,
+            "model": resp.model,
+            "latency_ms": latency_ms,
+            "status": "complete",
+        }
+    except Exception as exc:
+        log_event("error", "Chat LLM failed", str(exc)[:220], {"source": "dashboard_chat"})
+        reply = (
+            "I'm having trouble reaching the LLM stack right now: "
+            f"{exc}. Your message was saved — try again in a moment."
+        )
+        append_chat(state, "assistant", reply)
+        save_state(state)
+        log_event("chat", CHAT_AGENT_NAME, reply, {"status": "error"})
+        return {
+            "reply": reply,
+            "provider": "error",
+            "model": "",
+            "latency_ms": 0,
+            "status": "error",
+            "error": str(exc),
+        }
 
 
 @app.post("/api/chat")
 async def api_chat(req: ChatRequest) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(_run_chat, req)
+        # Prevent frontend "failed to fetch" by bounding the handler time.
+        # The worker thread may continue in the background if it times out.
+        task = asyncio.to_thread(_run_chat, req)
+        return await asyncio.wait_for(task, timeout=10.0)
+    except asyncio.TimeoutError:
+        log_event("error", "Chat handler timeout", "", {"status": "api_chat_timeout"})
+        return {
+            "reply": "Chat is taking longer than expected; your message was queued. Try again in a moment.",
+            "status": "queued_timeout",
+        }
     except Exception as exc:
         log_event("error", "Chat failed", str(exc), {"message": req.message[:200]})
         return {
@@ -527,6 +614,115 @@ async def api_chat(req: ChatRequest) -> dict[str, Any]:
             "status": "error",
             "error": str(exc),
         }
+
+
+@app.post("/api/agent_cli")
+async def api_agent_cli(req: AgentCliRequest) -> dict[str, Any]:
+    """Execute one Agent CLI turn via NVIDIA GLM 5.1."""
+    try:
+        result = await asyncio.to_thread(
+            agent_cli.run_turn,
+            req.prompt,
+            [],  # no history for stateless API calls
+            auto=req.auto,
+        )
+        return {"ok": True, "result": result}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+# ── Orchestrator / Agent Management ─────────────────────────────────────────
+
+@app.get("/api/agents")
+async def api_agents() -> dict[str, Any]:
+    """Return status for all orchestrated agents + native components."""
+    try:
+        agents = await asyncio.to_thread(all_agent_statuses)
+        native = await asyncio.to_thread(all_native_statuses)
+        return {
+            "ok": True,
+            "agents": agents,
+            "native": native,
+            "rotation": get_rotation_state(),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/agents/{name}")
+async def api_agent_detail(name: str) -> dict[str, Any]:
+    """Return status for a single agent."""
+    try:
+        if not agent_exists(name):
+            return {"ok": False, "error": f"Unknown agent: {name}"}
+        meta = get_agent_by_name(name)
+        if not meta:
+            return {"ok": False, "error": f"Agent metadata missing: {name}"}
+        status = await asyncio.to_thread(agent_status, meta)
+        return {"ok": True, "agent": status}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/agents/{name}/start")
+async def api_agent_start(name: str) -> dict[str, Any]:
+    """Start a single agent subprocess."""
+    try:
+        if not agent_exists(name):
+            return {"ok": False, "error": f"Unknown agent: {name}"}
+        meta = get_agent_by_name(name)
+        if not meta:
+            return {"ok": False, "error": f"Agent metadata missing: {name}"}
+        result = await asyncio.to_thread(start_agent, meta)
+        log_event(
+            "system",
+            f"Agent start: {meta.label}",
+            f"pid={result.get('pid')} ok={result.get('ok')}",
+            {"agent": name, "model": meta.openrouter_model},
+        )
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/agents/{name}/stop")
+async def api_agent_stop(name: str) -> dict[str, Any]:
+    """Stop a single agent subprocess."""
+    try:
+        if not agent_exists(name):
+            return {"ok": False, "error": f"Unknown agent: {name}"}
+        meta = get_agent_by_name(name)
+        if not meta:
+            return {"ok": False, "error": f"Agent metadata missing: {name}"}
+        result = await asyncio.to_thread(stop_agent, meta)
+        log_event(
+            "system",
+            f"Agent stop: {meta.label}",
+            f"killed={result.get('killed_pids')}",
+            {"agent": name},
+        )
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/rotation")
+async def api_rotation() -> dict[str, Any]:
+    """Return OpenRouter 7-key rotation state."""
+    try:
+        return {"ok": True, "rotation": get_rotation_state()}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/orchestrator/status")
+async def api_orchestrator_status() -> dict[str, Any]:
+    """Full stack status including agents, native, rotation, and stack health."""
+    try:
+        status = await asyncio.to_thread(get_full_stack_status)
+        return {"ok": True, **status}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.websocket("/ws")

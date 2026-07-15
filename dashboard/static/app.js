@@ -82,7 +82,7 @@ function setupChatScrollBehavior() {
 
 function fmtMoney(n) {
   if (n == null || Number.isNaN(n)) return "—";
-  return "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  return "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function fmtTime(ts) {
@@ -241,14 +241,18 @@ function applyAccount(acct) {
     metricTargets.uplTotal = (acct.positions || []).reduce((s, p) => s + (Number(p.upl) || 0), 0);
   }
 
-  // Millisecond stream of BloFin-linked figures: emit only when values change.
+  // Millisecond stream of BloFin-linked figures: emit only when values change materially.
   try {
     const uplTotalNow = metricTargets.uplTotal;
     const posSig = positionsSignature(acct.positions);
+    // Round to 2 decimals for comparison to suppress noise
+    const rEquity = Math.round(equity * 100) / 100;
+    const rAvailable = Math.round(available * 100) / 100;
+    const rUplTotal = Math.round(uplTotalNow * 100) / 100;
     const diff = {};
-    if (lastStream.equity !== equity) diff.equity = equity;
-    if (lastStream.available !== available) diff.available = available;
-    if (lastStream.uplTotal !== uplTotalNow) diff.uplTotal = uplTotalNow;
+    if (lastStream.equity !== rEquity) diff.equity = rEquity;
+    if (lastStream.available !== rAvailable) diff.available = rAvailable;
+    if (lastStream.uplTotal !== rUplTotal) diff.uplTotal = rUplTotal;
     if (lastStream.positionsSig !== posSig) {
       const rows = (acct.positions || []).slice(0, 6).map((p) => p.instId);
       diff.positionsChanged = true;
@@ -256,9 +260,9 @@ function applyAccount(acct) {
       diff.positions_count = (acct.positions || []).length;
     }
     if (Object.keys(diff).length) {
-      lastStream.equity = equity;
-      lastStream.available = available;
-      lastStream.uplTotal = uplTotalNow;
+      lastStream.equity = rEquity;
+      lastStream.available = rAvailable;
+      lastStream.uplTotal = rUplTotal;
       lastStream.positionsSig = posSig;
       streamNumbers("account", diff);
     }
@@ -303,13 +307,13 @@ function startMetricAnimation() {
     metricDisplay.equity += (metricTargets.equity - metricDisplay.equity) * ease;
     metricDisplay.available += (metricTargets.available - metricDisplay.available) * ease;
     metricDisplay.uplTotal += (metricTargets.uplTotal - metricDisplay.uplTotal) * ease;
-    if (Math.abs(metricTargets.equity - metricDisplay.equity) < 0.00005) {
+    if (Math.abs(metricTargets.equity - metricDisplay.equity) < 0.005) {
       metricDisplay.equity = metricTargets.equity;
     }
-    if (Math.abs(metricTargets.available - metricDisplay.available) < 0.00005) {
+    if (Math.abs(metricTargets.available - metricDisplay.available) < 0.005) {
       metricDisplay.available = metricTargets.available;
     }
-    if (Math.abs(metricTargets.uplTotal - metricDisplay.uplTotal) < 0.00005) {
+    if (Math.abs(metricTargets.uplTotal - metricDisplay.uplTotal) < 0.005) {
       metricDisplay.uplTotal = metricTargets.uplTotal;
     }
     renderMetricValues();
@@ -462,7 +466,7 @@ function applyPerformanceBaseline(bl) {
     blEl.className = "value " + (ch >= 0 ? "pos" : "neg");
     if (fromEl) {
       const base = Number(bl.baseline_equity);
-      fromEl.textContent = Number.isFinite(base) ? `from $${base.toFixed(4)}` : "from —";
+      fromEl.textContent = Number.isFinite(base) ? `from $${base.toFixed(2)}` : "from —";
     }
   } else if (bl.armed) {
     blEl.textContent = `await +$${Number(bl.expected_injection_usd || 0).toFixed(2)}`;
@@ -493,7 +497,7 @@ async function promptSetBaseline() {
   const currentEq = metricDisplay.equity || metricTargets.equity;
   const msg =
     "Set performance baseline (Baseline Δ zero point):\n\n" +
-    "• OK = use current equity" + (currentEq ? ` ($${Number(currentEq).toFixed(4)})` : "") + "\n" +
+    "• OK = use current equity" + (currentEq ? ` ($${Number(currentEq).toFixed(2)})` : "") + "\n" +
     "• Cancel = enter a custom $ amount";
   if (confirm(msg)) {
     try {
@@ -503,7 +507,7 @@ async function promptSetBaseline() {
     }
     return;
   }
-  const raw = prompt("Baseline equity ($):", currentEq ? Number(currentEq).toFixed(4) : "");
+  const raw = prompt("Baseline equity ($):", currentEq ? Number(currentEq).toFixed(2) : "");
   if (raw == null || !String(raw).trim()) return;
   const val = parseFloat(String(raw).replace(/^\$/, ""));
   if (!Number.isFinite(val) || val <= 0) {
@@ -655,15 +659,17 @@ async function loadChatHistory() {
     const data = await res.json();
     const messages = data.messages || [];
     if (!messages.length && chatHydrated) return;
-    if (chatHydrated && messages.length === renderedChatCount) return;
 
-    chatLogEl().innerHTML = "";
-    for (const msg of messages) {
+    const start = chatHydrated ? renderedChatCount : 0;
+    if (messages.length <= start) return;
+
+    const newMessages = messages.slice(start);
+    for (const msg of newMessages) {
       addChat(msg.role === "user" ? "user" : "assistant", msg.content || "", "", { forceScroll: false });
     }
     renderedChatCount = messages.length;
     chatHydrated = true;
-    scrollChatToBottom();
+    if (newMessages.length) scrollChatToBottom();
   } catch (_) {
     // ignore
   }
@@ -696,6 +702,718 @@ function handleChatActivity(ev) {
     }
   }
 }
+
+/* ============================================================
+   EQUITY CHART — ported from blohunter-connect, adapted to
+   the LLM KnightTrader theme and bundled into a single file.
+   ============================================================ */
+
+const EQUITY_TIMEFRAME_MS = {
+  '1D': 24 * 60 * 60 * 1000,
+  '1W': 7 * 24 * 60 * 60 * 1000,
+  '1M': 30 * 24 * 60 * 60 * 1000,
+  '3M': 90 * 24 * 60 * 60 * 1000,
+};
+const CHART_MARGIN = Object.freeze({ top: 26, right: 68, bottom: 32, left: 18 });
+const DEFAULT_EQUITY_RANGE = '1D';
+const EQUITY_FLASH_DURATION_MS = 1000;
+const EQUITY_SHIMMER_INTERVAL_MS = 5 * 60 * 1000;
+const EQUITY_SHIMMER_DURATION_MS = 2600;
+const EQUITY_INITIAL_SHIMMER_DELAY_MS = 1200;
+
+let selectedEquityRange = DEFAULT_EQUITY_RANGE;
+let latestEquityHistory = [];
+let latestAccountEquity = 0;
+let latestUnrealizedPnl = 0;
+let latestRenderedSeries = [];
+let hoveredEquityIndex = null;
+let latestEquityDataSignature = '';
+let equityFlashUntil = 0;
+let equityFlashFrame = null;
+let equityShimmerUntil = 0;
+let nextEquityShimmerAt = Date.now() + EQUITY_SHIMMER_INTERVAL_MS;
+let equityShimmerTimer = null;
+let hasPlayedInitialEquityShimmer = false;
+let pendingInitialEquityShimmerTimer = null;
+let equityShimmerVisibilityBound = false;
+
+function triggerEquityShimmer(now = Date.now(), { rescheduleAuto = false } = {}) {
+  equityShimmerUntil = now + EQUITY_SHIMMER_DURATION_MS;
+  if (rescheduleAuto) {
+    nextEquityShimmerAt = now + EQUITY_SHIMMER_INTERVAL_MS;
+    scheduleEquityShimmer();
+  }
+}
+
+function scheduleInitialEquityShimmer() {
+  if (hasPlayedInitialEquityShimmer) return;
+  if (pendingInitialEquityShimmerTimer !== null) return;
+  pendingInitialEquityShimmerTimer = window.setTimeout(() => {
+    pendingInitialEquityShimmerTimer = null;
+    hasPlayedInitialEquityShimmer = true;
+    triggerEquityShimmer(Date.now());
+    redrawEquityChart();
+  }, EQUITY_INITIAL_SHIMMER_DELAY_MS);
+}
+
+function scheduleEquityShimmer() {
+  if (equityShimmerTimer !== null) {
+    window.clearTimeout(equityShimmerTimer);
+    equityShimmerTimer = null;
+  }
+  const delayMs = Math.max(0, nextEquityShimmerAt - Date.now());
+  equityShimmerTimer = window.setTimeout(() => {
+    equityShimmerTimer = null;
+    triggerEquityShimmer(Date.now(), { rescheduleAuto: true });
+    redrawEquityChart();
+  }, delayMs);
+}
+
+function bindEquityShimmerVisibilityReplay() {
+  if (equityShimmerVisibilityBound) return;
+  equityShimmerVisibilityBound = true;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    if (hasPlayedInitialEquityShimmer && now >= nextEquityShimmerAt && equityShimmerUntil <= now) {
+      triggerEquityShimmer(now, { rescheduleAuto: true });
+      redrawEquityChart();
+    }
+  });
+}
+
+function isSupportedEquityRange(range) {
+  return range === 'ALL' || Object.hasOwn(EQUITY_TIMEFRAME_MS, range);
+}
+
+function buildEquityDataSignature(history, currentEquity) {
+  return JSON.stringify({
+    history: (history || []).map((point) => [
+      Number.parseInt(point?.at, 10) || 0,
+      Number.parseFloat(point?.equity || 0).toFixed(2),
+    ]),
+    currentEquity: Number.parseFloat(currentEquity || 0).toFixed(2),
+  });
+}
+
+function directionClass(value) {
+  return value >= 0 ? 'positive' : 'negative';
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function normalizeEquityHistory(history, currentEquity) {
+  const normalized = (history || [])
+    .map((point) => ({
+      at: Number.parseInt(point?.at, 10),
+      equity: Number.parseFloat(point?.equity),
+    }))
+    .filter(
+      (point) => Number.isFinite(point.at) && Number.isFinite(point.equity) && point.equity > 0
+    )
+    .sort((a, b) => a.at - b.at);
+
+  const now = Date.now();
+  if (Number.isFinite(currentEquity) && currentEquity > 0) {
+    const last = normalized[normalized.length - 1];
+    if (
+      !last ||
+      Math.abs(now - last.at) > 60 * 1000 ||
+      Math.abs(last.equity - currentEquity) > 0.0001
+    ) {
+      normalized.push({ at: now, equity: currentEquity });
+    }
+  }
+
+  return normalized;
+}
+
+function interpolateEquityPointAt(history, timestamp) {
+  if (!history.length) return null;
+
+  const target = Number(timestamp);
+  const nextIndex = history.findIndex((point) => point.at >= target);
+  if (nextIndex < 0) {
+    return { at: target, equity: history[history.length - 1].equity };
+  }
+  if (nextIndex === 0) {
+    return { at: target, equity: history[0].equity };
+  }
+
+  const previous = history[nextIndex - 1];
+  const next = history[nextIndex];
+  if (next.at === target) return { ...next };
+
+  const progress = (target - previous.at) / Math.max(next.at - previous.at, 1);
+  return {
+    at: target,
+    equity: previous.equity + (next.equity - previous.equity) * progress,
+  };
+}
+
+function uniqueEquityPoints(points = []) {
+  const byTimestamp = new Map();
+  for (const point of points) {
+    if (!point || !Number.isFinite(point.at) || !Number.isFinite(point.equity)) continue;
+    byTimestamp.set(point.at, point);
+  }
+  return [...byTimestamp.values()].sort((a, b) => a.at - b.at);
+}
+
+function getEquitySeriesForRange(history, range, now = Date.now()) {
+  if (!history.length) return [];
+  if (range === 'ALL') return history;
+
+  const durationMs = EQUITY_TIMEFRAME_MS[range] || 0;
+  const domainStart = now - durationMs;
+  const domainEnd = now;
+  const filtered = history.filter((point) => point.at > domainStart && point.at < domainEnd);
+
+  return uniqueEquityPoints([
+    interpolateEquityPointAt(history, domainStart),
+    ...filtered,
+    interpolateEquityPointAt(history, domainEnd),
+  ]);
+}
+
+function formatEquityRangeLabel(points) {
+  if (!points.length) return 'No account history yet';
+  if (points.length === 1) return `Started tracking ${formatCompactDateTime(points[0].at)}`;
+  return `${formatCompactDateTime(points[0].at)} to ${formatCompactDateTime(points[points.length - 1].at)}`;
+}
+
+function formatEquityAxisLabel(timestamp, range) {
+  const date = new Date(timestamp);
+  if (range === '1D') {
+    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  if (range === '1W') {
+    return date.toLocaleDateString([], { weekday: 'short' });
+  }
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function formatCompactDate(value) {
+  return new Date(value).toLocaleDateString([], {
+    month: 'numeric',
+    day: 'numeric',
+    year: '2-digit',
+  });
+}
+
+function syncEquitySummary(series, fallbackCurrentEquity, hoveredPoint = null) {
+  const current =
+    hoveredPoint?.equity ?? series[series.length - 1]?.equity ?? fallbackCurrentEquity ?? 0;
+  const baseline = series[0]?.equity ?? current;
+  const change = current - baseline;
+  const changePct = baseline > 0 ? (change / baseline) * 100 : 0;
+
+  const valEl = $('equityChartValue');
+  const chEl = $('equityChartChange');
+  const rngEl = $('equityChartRange');
+  if (valEl) valEl.textContent = fmtMoney(current);
+  if (chEl) {
+    chEl.textContent = `${fmtMoney(change)} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%)`;
+    chEl.className = `growth-change ${directionClass(change)}`;
+  }
+  if (rngEl) {
+    rngEl.textContent = hoveredPoint
+      ? `${formatCompactDateTime(hoveredPoint.at)} · ${fmtMoney(hoveredPoint.equity)}`
+      : formatEquityRangeLabel(series);
+  }
+}
+
+function drawSafeAxisLabel(ctx, label, x, y, cssWidth) {
+  const width = ctx.measureText(label).width;
+  const safeX = clamp(x, width / 2 + 6, cssWidth - width / 2 - 6);
+  ctx.fillText(label, safeX, y);
+}
+
+function buildEquityAxisTicks(points = [], desiredTickCount = 5) {
+  const validPoints = (points || [])
+    .filter((point) => Number.isFinite(point?.at))
+    .sort((a, b) => a.at - b.at);
+  if (!validPoints.length) return [];
+
+  const minTime = validPoints[0].at;
+  const maxTime = validPoints[validPoints.length - 1].at;
+  const timeSpan = maxTime - minTime;
+  if (timeSpan <= 0 || desiredTickCount <= 1) return [maxTime];
+
+  const tickCount = Math.max(2, Math.floor(desiredTickCount));
+  return Array.from({ length: tickCount }, (_, index) =>
+    Math.round(minTime + timeSpan * (index / (tickCount - 1)))
+  );
+}
+
+function buildSmoothLinePath(points, xFor, yFor) {
+  const path = new Path2D();
+  if (!points.length) return path;
+
+  path.moveTo(xFor(points[0].at), yFor(points[0].equity));
+  if (points.length === 1) return path;
+
+  for (let index = 0; index < points.length - 1; index++) {
+    const current = points[index];
+    const next = points[index + 1];
+    const currentX = xFor(current.at);
+    const currentY = yFor(current.equity);
+    const nextX = xFor(next.at);
+    const nextY = yFor(next.equity);
+    const controlX = currentX + (nextX - currentX) / 2;
+
+    path.bezierCurveTo(controlX, currentY, controlX, nextY, nextX, nextY);
+  }
+
+  return path;
+}
+
+function drawHoverState(ctx, hoveredPoint, x, y, cssWidth, cssHeight, margin) {
+  ctx.save();
+
+  ctx.strokeStyle = 'rgba(226, 232, 240, 0.14)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, margin.top);
+  ctx.lineTo(x, cssHeight - margin.bottom);
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(61, 220, 151, 0.22)';
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.arc(x, y, 5, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = '#0b1018';
+  ctx.beginPath();
+  ctx.arc(x, y, 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#3ddc97';
+  ctx.beginPath();
+  ctx.arc(x, y, 3.25, 0, Math.PI * 2);
+  ctx.fill();
+
+  const labelValue = fmtMoney(hoveredPoint.equity);
+  const labelTime = formatCompactDateTime(hoveredPoint.at);
+  ctx.font = '600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+  const labelWidth =
+    Math.max(ctx.measureText(labelValue).width, ctx.measureText(labelTime).width) + 18;
+  const labelHeight = 38;
+  const labelX = clamp(x - labelWidth / 2, margin.left, cssWidth - margin.right - labelWidth);
+  const labelY = y > 60 ? y - labelHeight - 12 : y + 14;
+
+  ctx.fillStyle = 'rgba(7, 11, 18, 0.92)';
+  ctx.strokeStyle = 'rgba(61, 220, 151, 0.14)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(labelX, labelY, labelWidth, labelHeight, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ecfdf5';
+  ctx.fillText(labelValue, labelX + 9, labelY + 14);
+  ctx.fillStyle = '#9ba7bf';
+  ctx.fillText(labelTime, labelX + 9, labelY + 28);
+
+  ctx.restore();
+}
+
+function eventClientX(event) {
+  if (typeof event.clientX === 'number') return event.clientX;
+  const touch = event.touches?.[0] || event.changedTouches?.[0];
+  return typeof touch?.clientX === 'number' ? touch.clientX : null;
+}
+
+function drawEquityChart(history, range, currentUnrealized = 0, hoverIndex = null) {
+  const canvas = $('equityChartCanvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const now = Date.now();
+  const flashRemaining = Math.max(0, equityFlashUntil - Date.now());
+  const flashProgress = flashRemaining > 0 ? flashRemaining / EQUITY_FLASH_DURATION_MS : 0;
+  const shimmerRemaining = Math.max(0, equityShimmerUntil - now);
+  const shimmerProgress =
+    shimmerRemaining > 0 ? 1 - shimmerRemaining / EQUITY_SHIMMER_DURATION_MS : 0;
+
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.clientWidth || 1200;
+  const cssHeight = canvas.clientHeight || 228;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const margin = CHART_MARGIN;
+  const plotWidth = cssWidth - margin.left - margin.right;
+  const plotHeight = cssHeight - margin.top - margin.bottom;
+
+  const panelGlow = ctx.createLinearGradient(0, 0, 0, cssHeight);
+  panelGlow.addColorStop(0, 'rgba(91, 157, 255, 0.08)');
+  panelGlow.addColorStop(0.52, 'rgba(61, 220, 151, 0.04)');
+  panelGlow.addColorStop(1, 'rgba(4, 8, 14, 0)');
+  ctx.fillStyle = panelGlow;
+  ctx.fillRect(0, 0, cssWidth, cssHeight);
+
+  if (!history.length) {
+    ctx.fillStyle = 'rgba(173, 182, 201, 0.78)';
+    ctx.font = '600 14px system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      'Account growth will appear once equity snapshots are collected.',
+      cssWidth / 2,
+      cssHeight / 2
+    );
+    return;
+  }
+
+  if (history.length === 1) {
+    ctx.fillStyle = 'rgba(173, 182, 201, 0.78)';
+    ctx.font = '600 14px system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      'Tracking started. The equity curve will build as new snapshots come in.',
+      cssWidth / 2,
+      cssHeight / 2
+    );
+  }
+
+  const minEquity = Math.min(...history.map((point) => point.equity));
+  const maxEquity = Math.max(...history.map((point) => point.equity));
+  const equitySpan = Math.max(maxEquity - minEquity, maxEquity * 0.02, 1);
+  const paddedMin = Math.max(0, minEquity - equitySpan * 0.18);
+  const paddedMax = maxEquity + equitySpan * 0.14;
+  const minTime = history[0].at;
+  const maxTime = history[history.length - 1].at;
+  const timeSpan = Math.max(maxTime - minTime, 1);
+  const xFor = (time) => margin.left + ((time - minTime) / timeSpan) * plotWidth;
+  const yFor = (equity) =>
+    margin.top + ((paddedMax - equity) / (paddedMax - paddedMin)) * plotHeight;
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = margin.top + (plotHeight / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(cssWidth - margin.right, y);
+    ctx.stroke();
+  }
+
+  const path = buildSmoothLinePath(history, xFor, yFor);
+
+  const areaPath = new Path2D(path);
+  areaPath.lineTo(xFor(history[history.length - 1].at), margin.top + plotHeight);
+  areaPath.lineTo(xFor(history[0].at), margin.top + plotHeight);
+  areaPath.closePath();
+
+  const fill = ctx.createLinearGradient(0, margin.top, 0, margin.top + plotHeight);
+  fill.addColorStop(0, 'rgba(61, 220, 151, 0.35)');
+  fill.addColorStop(0.55, 'rgba(91, 157, 255, 0.14)');
+  fill.addColorStop(1, 'rgba(91, 157, 255, 0.02)');
+  ctx.fillStyle = fill;
+  ctx.fill(areaPath);
+
+  if (Math.abs(currentUnrealized) >= 0.01) {
+    const unrealizedColor =
+      currentUnrealized >= 0 ? 'rgba(0, 214, 122, 0.18)' : 'rgba(255, 96, 96, 0.16)';
+    ctx.strokeStyle = unrealizedColor;
+    ctx.lineWidth = 8;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.shadowColor = unrealizedColor;
+    ctx.shadowBlur = 20;
+    ctx.stroke(path);
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.strokeStyle = '#3ddc97';
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.shadowColor = 'rgba(61, 220, 151, 0.22)';
+  ctx.shadowBlur = 16;
+  ctx.stroke(path);
+  ctx.shadowBlur = 0;
+
+  if (shimmerProgress > 0) {
+    const shimmerTravelStart = margin.left - plotWidth * 0.22;
+    const shimmerTravelEnd = margin.left + plotWidth * 1.18;
+    const shimmerCenter =
+      shimmerTravelStart + (shimmerTravelEnd - shimmerTravelStart) * shimmerProgress;
+    const shimmerBand = Math.max(160, plotWidth * 0.34);
+    const shimmerGradient = ctx.createLinearGradient(
+      shimmerCenter - shimmerBand,
+      0,
+      shimmerCenter + shimmerBand,
+      0
+    );
+    shimmerGradient.addColorStop(0, 'rgba(255, 59, 48, 0)');
+    shimmerGradient.addColorStop(0.18, 'rgba(255, 59, 48, 0)');
+    shimmerGradient.addColorStop(0.28, 'rgba(255, 59, 48, 0.98)');
+    shimmerGradient.addColorStop(0.34, 'rgba(255, 204, 0, 0.98)');
+    shimmerGradient.addColorStop(0.5, 'rgba(52, 199, 89, 0.98)');
+    shimmerGradient.addColorStop(0.66, 'rgba(24, 212, 255, 0.98)');
+    shimmerGradient.addColorStop(0.82, 'rgba(91, 140, 255, 0.96)');
+    shimmerGradient.addColorStop(0.92, 'rgba(214, 107, 255, 0.98)');
+    shimmerGradient.addColorStop(0.995, 'rgba(214, 107, 255, 0)');
+    shimmerGradient.addColorStop(1, 'rgba(214, 107, 255, 0)');
+    ctx.save();
+    ctx.strokeStyle = shimmerGradient;
+    ctx.lineWidth = 4.8;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(255, 255, 255, 0.38)';
+    ctx.shadowBlur = 18;
+    ctx.stroke(path);
+    ctx.restore();
+  }
+
+  if (flashProgress > 0) {
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.22 + flashProgress * 0.46})`;
+    ctx.lineWidth = 4.6 + flashProgress * 3.1;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.shadowColor = `rgba(61, 220, 151, ${0.18 + flashProgress * 0.34})`;
+    ctx.shadowBlur = 16 + flashProgress * 24;
+    ctx.stroke(path);
+    ctx.restore();
+  }
+
+  const last = history[history.length - 1];
+  const lastX = xFor(last.at);
+  const lastY = yFor(last.equity);
+  ctx.fillStyle = '#3ddc97';
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(61, 220, 151, 0.22)';
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 4.5, 0, Math.PI * 2);
+  ctx.stroke();
+
+  if (flashProgress > 0) {
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.2 + flashProgress * 0.5})`;
+    ctx.lineWidth = 8 + flashProgress * 6;
+    ctx.shadowColor = `rgba(61, 220, 151, ${0.18 + flashProgress * 0.32})`;
+    ctx.shadowBlur = 12 + flashProgress * 18;
+    ctx.beginPath();
+    ctx.arc(lastX, lastY, 5.5 + flashProgress * 2.5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.fillStyle = '#9ba7bf';
+  ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const equity = paddedMax - ((paddedMax - paddedMin) / 4) * i;
+    const y = margin.top + (plotHeight / 4) * i + 4;
+    ctx.fillText(fmtMoney(equity), cssWidth - 8, y);
+  }
+
+  ctx.textAlign = 'center';
+  for (const tickTime of buildEquityAxisTicks(history, 5)) {
+    const label = formatEquityAxisLabel(tickTime, range);
+    drawSafeAxisLabel(ctx, label, xFor(tickTime), cssHeight - 8, cssWidth);
+  }
+
+  if (hoverIndex !== null && hoverIndex >= 0 && hoverIndex < history.length) {
+    const hoveredPoint = history[hoverIndex];
+    drawHoverState(
+      ctx,
+      hoveredPoint,
+      xFor(hoveredPoint.at),
+      yFor(hoveredPoint.equity),
+      cssWidth,
+      cssHeight,
+      margin
+    );
+  }
+}
+
+function getHoveredEquityIndex(event) {
+  const canvas = $('equityChartCanvas');
+  if (!canvas || !latestRenderedSeries.length) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width) return null;
+  const clientX = eventClientX(event);
+  if (clientX === null) return null;
+  const relativeX = clamp(clientX - rect.left, 0, rect.width);
+  const minTime = latestRenderedSeries[0]?.at ?? 0;
+  const maxTime = latestRenderedSeries[latestRenderedSeries.length - 1]?.at ?? minTime;
+  const timeSpan = Math.max(maxTime - minTime, 1);
+  const plotWidth = rect.width - CHART_MARGIN.left - CHART_MARGIN.right;
+
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < latestRenderedSeries.length; index++) {
+    const pointX =
+      latestRenderedSeries.length === 1
+        ? rect.width / 2
+        : CHART_MARGIN.left + ((latestRenderedSeries[index].at - minTime) / timeSpan) * plotWidth;
+    const distance = Math.abs(pointX - relativeX);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
+}
+
+function handleEquityHover(event) {
+  const nextIndex = getHoveredEquityIndex(event);
+  if (nextIndex === hoveredEquityIndex) return;
+  hoveredEquityIndex = nextIndex;
+  redrawEquityChart();
+}
+
+function clearEquityHover() {
+  if (hoveredEquityIndex === null) return;
+  hoveredEquityIndex = null;
+  redrawEquityChart();
+}
+
+function handleEquityClick() {
+  triggerEquityShimmer();
+  redrawEquityChart();
+}
+
+function renderEquityChart(
+  equityHistory,
+  currentEquity,
+  currentUnrealized = 0,
+  options = {}
+) {
+  const { skipFlash = false, alreadyNormalized = false } = options;
+  const now = Date.now();
+  const normalizedHistory = alreadyNormalized
+    ? equityHistory || []
+    : normalizeEquityHistory(equityHistory, currentEquity);
+  if (!hasPlayedInitialEquityShimmer && normalizedHistory.length >= 2) {
+    scheduleInitialEquityShimmer();
+  } else if (now >= nextEquityShimmerAt && equityShimmerUntil <= now) {
+    triggerEquityShimmer(now, { rescheduleAuto: true });
+  }
+
+  if (!skipFlash) {
+    const nextDataSignature = buildEquityDataSignature(equityHistory, currentEquity);
+    if (latestEquityDataSignature && latestEquityDataSignature !== nextDataSignature) {
+      equityFlashUntil = Date.now() + EQUITY_FLASH_DURATION_MS;
+    }
+    latestEquityDataSignature = nextDataSignature;
+  }
+  latestEquityHistory = normalizedHistory;
+  latestAccountEquity = currentEquity;
+  latestUnrealizedPnl = currentUnrealized;
+  const range = isSupportedEquityRange(selectedEquityRange)
+    ? selectedEquityRange
+    : DEFAULT_EQUITY_RANGE;
+  selectedEquityRange = range;
+  const series = getEquitySeriesForRange(latestEquityHistory, range, now);
+  latestRenderedSeries = series;
+  const hoveredPoint =
+    hoveredEquityIndex !== null && series[hoveredEquityIndex] ? series[hoveredEquityIndex] : null;
+
+  const capEl = $('equityChartCaption');
+  if (capEl) {
+    capEl.textContent = latestEquityHistory.length
+      ? `Tracking since ${formatCompactDate(latestEquityHistory[0].at)}`
+      : 'Tracking starts after the first balance snapshot';
+  }
+  syncEquitySummary(series, currentEquity, hoveredPoint);
+
+  document.querySelectorAll('[data-equity-range]').forEach((button) => {
+    button.classList.toggle('active', button.getAttribute('data-equity-range') === range);
+  });
+
+  drawEquityChart(series, range, latestUnrealizedPnl, hoveredEquityIndex);
+
+  if (equityFlashUntil > now || equityShimmerUntil > now) {
+    if (equityFlashFrame !== null) {
+      window.cancelAnimationFrame(equityFlashFrame);
+      equityFlashFrame = null;
+    }
+    equityFlashFrame = window.requestAnimationFrame(() => {
+      equityFlashFrame = null;
+      redrawEquityChart();
+    });
+  } else if (equityFlashFrame !== null) {
+    window.cancelAnimationFrame(equityFlashFrame);
+    equityFlashFrame = null;
+  }
+}
+
+function redrawEquityChart() {
+  renderEquityChart(latestEquityHistory, latestAccountEquity, latestUnrealizedPnl, {
+    skipFlash: true,
+    alreadyNormalized: true,
+  });
+}
+
+function bindEquityTimeframes() {
+  scheduleEquityShimmer();
+  bindEquityShimmerVisibilityReplay();
+  document.querySelectorAll('[data-equity-range]').forEach((button) => {
+    if (button.dataset.bound === 'true') return;
+    button.dataset.bound = 'true';
+    button.addEventListener('click', () => {
+      selectedEquityRange = button.getAttribute('data-equity-range') || DEFAULT_EQUITY_RANGE;
+      redrawEquityChart();
+    });
+  });
+
+  const canvas = $('equityChartCanvas');
+  if (!canvas || canvas.dataset.hoverBound === 'true') return;
+  canvas.dataset.hoverBound = 'true';
+  canvas.addEventListener('mousemove', handleEquityHover);
+  canvas.addEventListener('mouseleave', clearEquityHover);
+  canvas.addEventListener('click', handleEquityClick);
+  canvas.addEventListener('touchstart', handleEquityHover, { passive: true });
+  canvas.addEventListener('touchmove', handleEquityHover, { passive: true });
+  canvas.addEventListener('touchend', clearEquityHover);
+  canvas.addEventListener('touchcancel', clearEquityHover);
+}
+
+function formatCompactDateTime(ts) {
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  return `${mo}/${da} ${hh}:${mm}`;
+}
+
+async function refreshEquity() {
+  try {
+    const res = await fetch('/api/equity');
+    const data = await res.json();
+    const history = data.history || [];
+    const currentEquity = data.current_equity || 0;
+    const unrealized = metricTargets.uplTotal || 0;
+    renderEquityChart(history, currentEquity, unrealized);
+  } catch (_) {
+    // ignore — chart will show placeholder until data arrives
+  }
+}
+
+/* Resize observer for equity chart */
+const equityChartResizeObserver = new ResizeObserver(() => {
+  if (latestRenderedSeries.length) redrawEquityChart();
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  const canvas = $('equityChartCanvas');
+  if (canvas) equityChartResizeObserver.observe(canvas);
+  bindEquityTimeframes();
+});
 
 function connectWs() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -806,6 +1524,262 @@ $("chat-form").addEventListener("submit", async (e) => {
 });
 
 $("restart-stack-btn")?.addEventListener("click", restartStack);
+
+// ─── Agent CLI ─────────────────────────────────────────────────────────────
+const agentCliLogEl = () => $("agent-cli-log");
+
+function addAgentCliEntry(role, text) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  const who = role === "user" ? "You" : "Agent CLI";
+  div.innerHTML = `<div class="who">${who}</div><div class="body"><pre style="white-space:pre-wrap;word-break:break-word;">${text.replace(/</g, "&lt;")}</pre></div>`;
+  agentCliLogEl().appendChild(div);
+  agentCliLogEl().scrollTop = agentCliLogEl().scrollHeight;
+  return div;
+}
+
+$("agent-cli-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("agent-cli-input");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  addAgentCliEntry("user", text);
+  const thinking = addAgentCliEntry("assistant", "Running…");
+  try {
+    const res = await fetch("/api/agent_cli", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: text, auto: false }),
+    });
+    const data = await res.json();
+    thinking.remove();
+    if (data.ok) {
+      addAgentCliEntry("assistant", data.result);
+    } else {
+      addAgentCliEntry("assistant", "Error: " + (data.error || "Unknown error"));
+    }
+  } catch (err) {
+    thinking.remove();
+    addAgentCliEntry("assistant", "Error: " + err.message);
+  }
+});
+$("agent-cli-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("agent-cli-input");
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  input.value = "";
+  addAgentCliEntry("user", prompt);
+  const thinking = addAgentCliEntry("assistant", "Running…", "thinking");
+  try {
+    const res = await fetch("/api/agent_cli", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, auto: false }),
+    });
+    const data = await res.json();
+    thinking.remove();
+    if (data.ok && data.result) {
+      const r = data.result;
+      if (r.tool_results && r.tool_results.length) {
+        for (const tr of r.tool_results) {
+          addAgentCliEntry("tool", `${tr.tool}: ${tr.result?.substring?.(0, 400) || JSON.stringify(tr.result)?.substring?.(0, 400) || ""}`);
+        }
+      }
+      addAgentCliEntry("assistant", r.response || "Done.");
+    } else {
+      addAgentCliEntry("assistant", "Error: " + (data.error || "Unknown"));
+    }
+  } catch (err) {
+    thinking.remove();
+    addAgentCliEntry("assistant", "Error: " + err.message);
+  }
+});
+
+/* ============================================================
+   AGENT STACK PANEL — orchestrator status, start/stop, rotation
+   ============================================================ */
+
+let _agentDataCache = null;
+let _agentCatFilter = "all";
+
+function renderAgentCategories(categories) {
+  const el = $("agent-categories");
+  if (!el) return;
+  const cats = ["all", ...categories];
+  el.innerHTML = cats.map((c) => {
+    const active = c === _agentCatFilter ? "active" : "";
+    const label = c === "all" ? "All" : c.charAt(0).toUpperCase() + c.slice(1);
+    return `<button class="agent-cat-btn ${active}" data-cat="${c}">${label}</button>`;
+  }).join("");
+  el.querySelectorAll(".agent-cat-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      _agentCatFilter = btn.dataset.cat;
+      if (_agentDataCache) renderAgentList(_agentDataCache.agents, _agentDataCache.native);
+    });
+  });
+}
+
+function renderAgentList(agents, native) {
+  const el = $("agent-list");
+  if (!el) return;
+  if (!agents || !agents.length) {
+    el.innerHTML = "<div class='note-card'>No agents registered</div>";
+    return;
+  }
+
+  const filtered = _agentCatFilter === "all" ? agents : agents.filter((a) => a.category === _agentCatFilter);
+
+  // Sort: online first, then by category, then by name
+  filtered.sort((a, b) => {
+    if (a.status !== b.status) return a.status === "online" ? -1 : 1;
+    if (a.category !== b.category) return (a.category || "").localeCompare(b.category || "");
+    return (a.label || a.name).localeCompare(b.label || b.name);
+  });
+
+  el.innerHTML = filtered.map((a) => {
+    const statusClass = a.status === "online" ? "online" : "offline";
+    const modelShort = (a.openrouter_model || "").split("/").pop()?.replace(":free", "") || "—";
+    const pidStr = a.pid ? `pid ${a.pid}` : "—";
+    return `
+      <div class="agent-card" data-agent="${a.name}">
+        <div class="agent-dot ${statusClass}"></div>
+        <div class="agent-info">
+          <div class="agent-name">${escapeHtml(a.label || a.name)}</div>
+          <div class="agent-meta">${escapeHtml(a.category || "")} · ${pidStr}</div>
+        </div>
+        <div class="agent-model" title="${escapeHtml(a.openrouter_model || "")}">${escapeHtml(modelShort)}</div>
+        <div class="agent-actions">
+          <button data-action="start" data-agent="${a.name}">Start</button>
+          <button class="danger" data-action="stop" data-agent="${a.name}">Stop</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  // Native components
+  if (native && _agentCatFilter === "all") {
+    const nativeCards = Object.entries(native).map(([key, n]) => {
+      const statusClass = n.status === "online" ? "online" : "offline";
+      const pidStr = n.pid ? `pid ${n.pid}` : "—";
+      const count = n.count > 1 ? `×${n.count}` : "";
+      return `
+        <div class="agent-card" data-native="${key}">
+          <div class="agent-dot ${statusClass}"></div>
+          <div class="agent-info">
+            <div class="agent-name">${escapeHtml(n.label || key)}</div>
+            <div class="agent-meta">native · ${pidStr} ${count}</div>
+          </div>
+          <div class="agent-model">${escapeHtml(n.module || "")}</div>
+          <div class="agent-actions"></div>
+        </div>
+      `;
+    }).join("");
+    el.insertAdjacentHTML("beforeend", nativeCards);
+  }
+
+  // Bind actions
+  el.querySelectorAll("[data-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const agent = btn.dataset.agent;
+      const action = btn.dataset.action;
+      if (!agent || !action) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/agents/${agent}/${action}`, { method: "POST" });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(`Failed to ${action} ${agent}: ${data.error || "unknown"}`);
+        }
+        await refreshAgents();
+      } catch (err) {
+        alert(`${action} ${agent} failed: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+function renderRotation(rotation) {
+  if (!rotation) return;
+  const keyEl = $("rotation-key");
+  const modelEl = $("rotation-model");
+  const failEl = $("rotation-failures");
+  if (keyEl) keyEl.textContent = `Key ${rotation.key_index + 1}/7`;
+  if (modelEl) {
+    const short = (rotation.model_name || "—").split("/").pop()?.replace(":free", "") || "—";
+    modelEl.textContent = short;
+    modelEl.title = rotation.model_name || "";
+  }
+  if (failEl) {
+    const fails = rotation.failures || {};
+    const totalFails = Object.values(fails).reduce((a, b) => a + b, 0);
+    failEl.textContent = totalFails > 0 ? `${totalFails} failures` : "";
+  }
+}
+
+async function refreshAgents() {
+  try {
+    const res = await fetch("/api/agents");
+    const data = await res.json();
+    if (!data.ok) return;
+    _agentDataCache = data;
+
+    // Extract unique categories
+    const categories = [...new Set((data.agents || []).map((a) => a.category).filter(Boolean))];
+    renderAgentCategories(categories);
+    renderAgentList(data.agents, data.native);
+    renderRotation(data.rotation);
+  } catch (_) {
+    // ignore
+  }
+}
+
+async function startAllAgents() {
+  const btn = $("start-all-agents");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    for (const meta of (_agentDataCache?.agents || [])) {
+      if (meta.status === "offline") {
+        await fetch(`/api/agents/${meta.name}/start`, { method: "POST" });
+        await new Promise((r) => setTimeout(r, 600));
+      }
+    }
+    await refreshAgents();
+  } catch (err) {
+    alert("Start all failed: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function stopAllAgents() {
+  const btn = $("stop-all-agents");
+  if (!btn) return;
+  if (!confirm("Stop ALL orchestrated agents? (Native stack components are not affected)")) return;
+  btn.disabled = true;
+  try {
+    for (const meta of (_agentDataCache?.agents || [])) {
+      if (meta.status === "online") {
+        await fetch(`/api/agents/${meta.name}/stop`, { method: "POST" });
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    await refreshAgents();
+  } catch (err) {
+    alert("Stop all failed: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("start-all-agents")?.addEventListener("click", startAllAgents);
+$("stop-all-agents")?.addEventListener("click", stopAllAgents);
+$("refresh-agents")?.addEventListener("click", refreshAgents);
+
 $("baseline-metric")?.addEventListener("click", promptSetBaseline);
 
 loadChatHistory();
@@ -815,6 +1789,8 @@ refreshStatus();
 refreshAccount();
 refreshActivity();
 refreshTradesResearch();
+refreshEquity(); // load equity chart
+refreshAgents();
 connectWs();
 setInterval(refreshAccount, 3000);
 setInterval(refreshStackStatus, 5000);
@@ -822,3 +1798,5 @@ setInterval(refreshStatus, 30000);
 setInterval(refreshActivity, 3000);
 setInterval(refreshTradesResearch, 30000);
 setInterval(loadChatHistory, 8000);
+setInterval(refreshEquity, 15000); // refresh equity chart every 15s
+setInterval(refreshAgents, 5000);

@@ -11,8 +11,10 @@ DEFAULT_USER_DIRECTIVES = [
     "Trade both long AND short when scan score permits: side=buy for bullish setups (score >= 3), "
     "side=sell for bearish setups (score <= -3). Do not only hunt longs — strong sell signals are "
     "valid short entries in net_mode.",
-    "Trade intelligently at ANY equity: pick affordable scan rows, let execution auto-raise leverage "
-    "to meet BloFin minimum contract margin, balance risk with tighter TP/SL on higher leverage.",
+    "Trade intelligently at ANY equity: pick affordable scan rows. Execution auto-raises leverage to "
+    "the minimum required to satisfy each instrument's minimum contract margin across the whole BloFin "
+    "universe. Default responsible cap is 20x; allow 30x-50x only when needed to afford the min size. "
+    "Wider leverage is NOT an excuse for bigger bets — size to the same heat budget and tighten SL (1-2%) above 10x.",
     "BloHunter book: many concurrent positions sized per setup — no fixed max count. "
     "Size each open from conviction + scan sentiment + available margin. "
     "Only close to harvest winners at +5% NTP or better; hold losers and sub-floor greens.",
@@ -27,6 +29,8 @@ SIMULATION MISSION: {MISSION_PROMPT}
 
 BLOHUNTER TACTICS (from blohunter-connect + blohunter.com — follow these disciplines):
 {_BLOHUNTER_TACTICS}
+
+LEVERAGE OVERRIDE — KnightTrader runs on BloFin net_mode and is allowed higher, responsible leverage than the BloHunter extension's conservative 3x cap. Execution auto-raises leverage to the minimum needed to satisfy each instrument's minimum contract margin. Default responsible cap is 20x; use 30x-50x only when required to meet the min margin of the selected asset. Higher leverage demands tighter SL (1-2% when >10x) and strict portfolio-heat discipline.
 
 The human operator talks to you via dashboard chat. Every message is saved and injected into this loop as `operator_instructions` — **you must read and follow it**. When acting on operator chat, cite their words in `reasoning` or `strategy_update`.
 
@@ -60,7 +64,7 @@ RULES:
 - **Smart margin / leverage (USER DIRECTIVE — game mode):** Trade at any equity when a setup is affordable.
   - Prefer scan rows marked `affordable: true`; check each row's `sizing.margin_budget` and `est_margin`.
   - **Higher confidence + stronger |score| → larger margin slice.** More open positions → softer portfolio heat dilution (not a hard cap).
-  - Execution auto-sets BloFin leverage (3x→50x ladder) and scales contracts to fit the computed budget.
+  - Execution auto-sets BloFin leverage (3x→50x ladder) and scales contracts to fit the computed budget. Default responsible cap is 20x; allow 30x-50x only when the instrument's minimum contract margin cannot be met at ≤20x.
   - On small accounts, favor low-notional perps (e.g. TRUTH, GUN, BASED) over expensive coins (BTC, AAVE).
   - Use tighter `sl_pct` (1–2%) when leverage > 10x; do not refuse opens solely because equity < $5.
 - **BloHunter multi-book + harvest (CRITICAL):**
@@ -97,3 +101,14 @@ You may open **long** (`buy`) or **short** (`sell`) per scan: score >= 3 with si
 On small equity, execution raises leverage automatically to satisfy minimum contract margin — prefer affordable scan rows.
 Be direct. Note risks when appropriate. This is not financial advice.
 """
+
+REPAIR_CHAT_SYSTEM = (
+    f"You are one of the {APP_NAME} autonomous repair techs (Watchdog / Code Fixer / Order Guardian).\n\n"
+    "A human operator has sent a repair/fix request through the dashboard chat. "
+    "Respond as a concise, evidence-based technician:\n"
+    "1. Acknowledge the symptom or request.\n"
+    "2. Explain what you will inspect (logs, processes, account state, code).\n"
+    "3. State what you can do autonomously and what may need a confirm: patch.\n"
+    "4. Do NOT take destructive actions in this chat response — only diagnose and plan.\n\n"
+    "Keep the response under 3 short paragraphs. If the request is vague, ask one clarifying question."
+)

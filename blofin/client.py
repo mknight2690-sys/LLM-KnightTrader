@@ -268,6 +268,61 @@ class BlofinClient:
         }
         return self.request("POST", "/api/v1/trade/order-tpsl", body=body)
 
+    def get_orders_tpsl_pending(
+        self,
+        *,
+        inst_id: str | None = None,
+        inst_type: str = "SWAP",
+        page_index: int | None = None,
+        page_size: int | None = None,
+    ) -> dict[str, Any]:
+        """List pending TP/SL (TPSL) orders.
+
+        Endpoint returns list in resp["data"].
+        """
+        params: dict[str, str] = {}
+        if inst_id:
+            params["instId"] = inst_id
+        if inst_type:
+            params["instType"] = inst_type
+        if page_index is not None:
+            params["pageIndex"] = str(page_index)
+        if page_size is not None:
+            params["pageSize"] = str(page_size)
+        return self.request("GET", "/api/v1/trade/orders-tpsl-pending", params=params or None)
+
+    def get_order_tpsl_detail(
+        self,
+        *,
+        inst_id: str,
+        tpsl_id: str,
+    ) -> dict[str, Any]:
+        """Fetch a specific TPSL order detail by tpslId."""
+        params = {"instId": inst_id, "tpslId": tpsl_id}
+        return self.request("GET", "/api/v1/trade/order-tpsl-detail", params=params)
+
+    def cancel_tpsl(
+        self,
+        *,
+        inst_id: str | None = None,
+        tpsl_ids: list[str] | None = None,
+        client_order_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Cancel TPSL orders.
+
+        BloFin requires either tpslId or clientOrderId per row.
+        """
+        body: list[dict[str, Any]] = []
+        if tpsl_ids:
+            for tid in tpsl_ids:
+                body.append({"instId": inst_id, "tpslId": str(tid), "clientOrderId": ""})
+        if client_order_ids:
+            for cid in client_order_ids:
+                body.append({"instId": inst_id, "tpslId": "", "clientOrderId": str(cid)})
+        if not body:
+            return {"code": "1", "msg": "no tpsl identifiers provided", "data": []}
+        return self.request("POST", "/api/v1/trade/cancel-tpsl", body=body)
+
     def set_leverage(
         self,
         inst_id: str,

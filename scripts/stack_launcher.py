@@ -1,18 +1,12 @@
-"""Desktop launcher ΓÇö start/stop the full LLM KnightTrader stack.
-
-
+"""Desktop launcher -- start/stop the full LLM KnightTrader stack.
 
 Single-instance enforcement: port check + lock file.
 
-No aggressive process killing ΓÇö user runs 'stop' first.
+No aggressive process killing -- user runs 'stop' first.
 
 """
 
-
-
 from __future__ import annotations
-
-
 
 import argparse
 
@@ -32,29 +26,20 @@ import webbrowser
 
 from pathlib import Path
 
-
-
 ROOT = Path(__file__).resolve().parents[1]
 
 if str(ROOT) not in sys.path:
 
     sys.path.insert(0, str(ROOT))
 
-
-
 from config import DATA_DIR, DASHBOARD_HOST, DASHBOARD_PORT, PID_DIR
 
 from trader.stack_control import _trader_python, kill_entire_stack
-
-
+from trader.orchestrator import start_all_agents, stop_all_agents
 
 DASHBOARD_URL = f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}"
 
 LAUNCHER_LOCK = PID_DIR / "launcher.lock"
-
-
-
-
 
 def _write_pid(name: str, pid: int) -> None:
 
@@ -62,25 +47,17 @@ def _write_pid(name: str, pid: int) -> None:
 
     (PID_DIR / f"{name}.pid").write_text(str(pid), encoding="utf-8")
 
-
-
-
-
 def _acquire_launcher_lock() -> bool:
 
     """Port check + lock file. Returns True if we should proceed."""
 
     PID_DIR.mkdir(parents=True, exist_ok=True)
 
-
-
     # Primary check: is the dashboard port in use?
 
     if not _is_port_free(DASHBOARD_PORT):
 
         return False
-
-
 
     # Secondary: lock file (prevents double-launch from race conditions)
 
@@ -102,15 +79,9 @@ def _acquire_launcher_lock() -> bool:
 
             LAUNCHER_LOCK.unlink(missing_ok=True)
 
-
-
     LAUNCHER_LOCK.write_text(str(os.getpid()), encoding="utf-8")
 
     return True
-
-
-
-
 
 def _pid_alive(pid: int) -> bool:
 
@@ -150,10 +121,6 @@ def _pid_alive(pid: int) -> bool:
 
         return False
 
-
-
-
-
 def _release_launcher_lock() -> None:
 
     try:
@@ -169,10 +136,6 @@ def _release_launcher_lock() -> None:
     except (ValueError, OSError):
 
         pass
-
-
-
-
 
 def _popen_module(module: str, *, log_file: str | None = None) -> subprocess.Popen:
 
@@ -218,10 +181,6 @@ def _popen_module(module: str, *, log_file: str | None = None) -> subprocess.Pop
 
     return proc
 
-
-
-
-
 REPAIR_AGENTS = (
 
     ("trader.repair_agents.watchdog", "repair_watchdog.log"),
@@ -234,7 +193,29 @@ REPAIR_AGENTS = (
 
 
 
+def _start_orchestrator_agents() -> dict:
+    """Launch all Owl Swarm agents via the orchestrator."""
+    print("Starting Owl Swarm agents...", flush=True)
+    try:
+        result = start_all_agents()
+        started = [r for r in result.get('results', []) if r.get('ok')]
+        print(f"  {len(started)} agents started", flush=True)
+        return result
+    except Exception as exc:
+        print(f"WARNING: failed to start agents: {exc}", flush=True)
+        return {"ok": False, "error": str(exc)}
 
+
+def _stop_orchestrator_agents() -> dict:
+    """Stop all Owl Swarm agents via the orchestrator."""
+    try:
+        result = stop_all_agents()
+        killed = [r for r in result.get('results', []) if r.get('ok')]
+        print(f"  {len(killed)} agents stopped", flush=True)
+        return result
+    except Exception as exc:
+        print(f"WARNING: failed to stop agents: {exc}", flush=True)
+        return {"ok": False, "error": str(exc)}
 
 def _wait_dashboard_health(timeout_sec: float = 30.0) -> bool:
 
@@ -262,8 +243,12 @@ def _wait_dashboard_health(timeout_sec: float = 30.0) -> bool:
 
 
 
+    # Launch Owl Swarm agents (integral part of the trading stack)
+    agent_result = _start_orchestrator_agents()
+    agent_pids = [r.get('pid') for r in agent_result.get('results', []) if r.get('pid')]
 
-
+    if agent_pids:
+        print(f"Swarm agents: {len(agent_pids)} running", flush=True)
 def _ensure_desktop_shortcuts() -> None:
 
     script = ROOT / "scripts" / "create_desktop_shortcuts.ps1"
@@ -281,10 +266,6 @@ def _ensure_desktop_shortcuts() -> None:
         check=False,
 
     )
-
-
-
-
 
 def _is_port_free(port: int) -> bool:
 
@@ -322,10 +303,6 @@ def _is_port_free(port: int) -> bool:
 
         return True
 
-
-
-
-
 def stop_stack() -> int:
 
     print("Stopping all LLM KnightTrader processes...", flush=True)
@@ -360,10 +337,6 @@ def stop_stack() -> int:
 
     return 0
 
-
-
-
-
 def start_stack(*, open_browser: bool = False) -> int:
 
     """Start exactly one dashboard + one trader + repair agents."""
@@ -378,8 +351,6 @@ def start_stack(*, open_browser: bool = False) -> int:
 
         return 1
 
-
-
     try:
 
         return _start_stack_inner(open_browser=open_browser)
@@ -387,10 +358,6 @@ def start_stack(*, open_browser: bool = False) -> int:
     finally:
 
         _release_launcher_lock()
-
-
-
-
 
 def _start_stack_inner(*, open_browser: bool = False) -> int:
 
@@ -418,8 +385,6 @@ def _start_stack_inner(*, open_browser: bool = False) -> int:
 
     _write_pid("dashboard", dash.pid)
 
-
-
     if not _wait_dashboard_health():
 
         print("ERROR: dashboard health check failed")
@@ -427,8 +392,6 @@ def _start_stack_inner(*, open_browser: bool = False) -> int:
         return 1
 
     print("  health OK", flush=True)
-
-
 
     print("Starting trader...", flush=True)
 
@@ -454,8 +417,6 @@ def _start_stack_inner(*, open_browser: bool = False) -> int:
 
     _write_pid("trader", trader.pid)
 
-
-
     time.sleep(1.0)
 
     dash_alive = dash.poll() is None
@@ -466,15 +427,13 @@ def _start_stack_inner(*, open_browser: bool = False) -> int:
 
         print(
 
-            f"ERROR: process exited unexpectedly ΓÇö "
+            f"ERROR: process exited unexpectedly -- "
 
             f"dashboard_alive={dash_alive} trader_alive={trader_alive}"
 
         )
 
         return 1
-
-
 
     # Launch repair agents
 
@@ -494,8 +453,6 @@ def _start_stack_inner(*, open_browser: bool = False) -> int:
 
             print(f"WARNING: failed to start {module}: {e}")
 
-
-
     _ensure_desktop_shortcuts()
 
     print(f"Dashboard PID {dash.pid} | Trader PID {trader.pid}")
@@ -508,17 +465,11 @@ def _start_stack_inner(*, open_browser: bool = False) -> int:
 
     print("Daily use: double-click 'Start LLM KnightTrader' on desktop to restart the stack.")
 
-
-
     if open_browser:
 
         webbrowser.open(DASHBOARD_URL)
 
     return 0
-
-
-
-
 
 def main() -> int:
 
@@ -526,17 +477,11 @@ def main() -> int:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-
-
     start_p = sub.add_parser("start", help="Start dashboard + trader (port must be free)")
 
     start_p.add_argument("--open-browser", action="store_true")
 
-
-
     sub.add_parser("stop", help="Stop all KT processes")
-
-
 
     args = parser.parse_args()
 
@@ -546,11 +491,6 @@ def main() -> int:
 
     return start_stack(open_browser=bool(args.open_browser))
 
-
-
-
-
 if __name__ == "__main__":
 
     raise SystemExit(main())
-
