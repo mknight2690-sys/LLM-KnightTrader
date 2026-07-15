@@ -563,56 +563,50 @@ def _execute_decision(
     )
 
     if resp.get("code") == "0":
-        tp_pct = float(decision.get("tp_pct") or 2.0)
-        sl_pct = float(decision.get("sl_pct") or 1.0)
-        time.sleep(1.5)
-        _refresh_account_after_trade(client)
-        fresh = client.parse_account_snapshot(force=True)
-        mark = resolve_mark_price(
-            client, plan.inst_id, account=fresh, fallback=price,
-        )
-        tpsl = attach_tpsl_safe(
-            client,
-            inst_id=plan.inst_id,
-            side=side,
-            contracts=contracts_str,
-            mark=mark,
-            tp_pct=tp_pct,
-            sl_pct=sl_pct,
-            leverage=int(plan.leverage),
-            account=fresh,
-        )
-        results.append({"action": "tpsl", "response": tpsl})
-        ok = bool(tpsl.get("_tpsl_effective")) and str(tpsl.get("code")) in ("0", "0.0")
-        if not ok:
-            _, tpsl_err = client.order_rejected(tpsl)
-            triage = llm_triage_and_repair(
-                state,
-                client,
-                llm,
-                account,
-                scan_rows,
-                incident={
-                    "phase": "tpsl_failed",
-                    "instId": plan.inst_id,
-                    "side": side,
-                    "contracts": contracts_str,
-                    "price": mark,
-                    "leverage": int(plan.leverage),
-                    "tp_pct": tp_pct,
-                    "sl_pct": sl_pct,
-                    "error": tpsl_err or str(tpsl.get("msg") or ""),
-                    "response": tpsl,
-                },
-            )
-            if triage.recovered and triage.retry_payload:
-                tpsl = triage.retry_payload
-                ok = str(tpsl.get("code")) in ("0", "0.0")
-        if ok:
-            log_event("trade", f"TP/SL attached {plan.inst_id}", json.dumps(tpsl)[:300])
-            results.append({"action": "tpsl_ok", "instId": plan.inst_id})
+        # --- Manual ATR-based TP/SL (backtest method) ---
+        # Cancel any stale order-tpsl so we control risk in-code.
+        try:
+            pending = client.get_orders_tpsl_pending(inst_id=plan.inst_id)
+            ids = [str(r.get("tpslId")) for r in (pending.get("data") or []) if r.get("tpslId")]
+            if ids:
+                client.cancel_tpsl(inst_id=plan.inst_id, tpsl_ids=ids)
+        except Exception:
+            pass
+
+        try:
+            rows = client.get_candles(plan.inst_id, "5m", "10")
+            highs = [float(r[2]) for r in rows]
+            lows = [float(r[3]) for r in rows]
+            trs = [h - l for h, l in zip(highs, lows)]
+            atr = sum(trs) / max(len(trs), 1) if trs else (plan.price * 0.01)
+        except Exception:
+            atr = plan.price * 0.01
+
+        sl_dist = max(atr * 0.5, plan.price * 0.015)
+        tp_dist = sl_dist * 2.0
+        if side == "buy":
+            sl = plan.price - sl_dist
+            tp = plan.price + tp_dist
         else:
-            log_event("error", f"TP/SL failed {plan.inst_id}", json.dumps(tpsl)[:300])
+            sl = plan.price + sl_dist
+            tp = plan.price - tp_dist
+
+        manual_plan = {
+            "side": side,
+            "entry": plan.price,
+            "sl": sl,
+            "tp": tp,
+            "leverage": int(plan.leverage),
+            "contracts": contracts_str,
+        }
+        state.setdefault("_manual_tpsl", {})[plan.inst_id] = manual_plan
+        log_event(
+            "trade",
+            f"Manual TP/SL set {plan.inst_id}",
+            f"entry={plan.price:.6f} SL={sl:.6f} TP={tp:.6f} leverage={plan.leverage}x",
+            manual_plan,
+        )
+        results.append({"action": "manual_tpsl_set", "instId": plan.inst_id, "plan": manual_plan})
 
     return results
 
@@ -705,6 +699,74 @@ def _auto_harvest_winners(
             {"action": "close_all", "instId": None, "reasoning": "auto-harvest winners"},
             results,
         )
+    return results
+
+
+def _enforce_manual_tpsl(
+    client: BlofinClient,
+    state: dict[str, Any],
+    account: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Close positions whose mark hit manual ATR-based TP or SL before harvest."""
+    manual_plans = state.get("_manual_tpsl", {}) or {}
+    if not manual_plans:
+        return []
+
+    results: list[dict[str, Any]] = []
+    positions = {
+        str(p.get("instId") or ""): p
+        for p in account.get("positions", [])
+        if abs(float(p.get("size") or p.get("positions") or 0)) > 0
+    }
+
+    for inst, plan in list(manual_plans.items()):
+        pos = positions.get(inst)
+        if not pos:
+            # Position gone — drop stale plan.
+            manual_plans.pop(inst, None)
+            continue
+
+        entry = float(plan.get("entry") or 0)
+        sl = float(plan.get("sl") or 0)
+        tp = float(plan.get("tp") or 0)
+        side = str(plan.get("side") or "")
+        if not entry or not sl or not tp or not side:
+            continue
+
+        mark = float(pos.get("mark") or pos.get("markPrice") or 0)
+        if mark <= 0:
+            try:
+                rows = client.get_candles(inst, "1m", "2")
+                if rows:
+                    mark = float(rows[-1][4])
+            except Exception:
+                pass
+        if mark <= 0:
+            continue
+
+        hit_tp = False
+        hit_sl = False
+        if side == "buy":
+            if mark >= tp:
+                hit_tp = True
+            elif mark <= sl:
+                hit_sl = True
+        else:
+            if mark <= tp:
+                hit_tp = True
+            elif mark >= sl:
+                hit_sl = True
+
+        if not hit_tp and not hit_sl:
+            continue
+
+        try:
+            if _record_close(client, results, pos, state, None, account, []):
+                manual_plans.pop(inst, None)
+                reason = f"manual {'TP' if hit_tp else 'SL'} {inst} mark={mark:.6f} TP={tp:.6f} SL={sl:.6f}"
+                log_event("trade", reason, {}, {"instId": inst, "reason": reason})
+        except Exception as exc:
+            log_event("error", f"Manual TP/SL close failed {inst}", str(exc)[:200])
     return results
 
 
@@ -874,9 +936,12 @@ def run_cycle(client: BlofinClient, llm: LLMWrapper, state: dict[str, Any]) -> d
         account = client.parse_account_snapshot(force=True)
     account["_scan"] = scan
 
+    manual_results = _enforce_manual_tpsl(client, state, account)
     harvest_results = _auto_harvest_winners(client, llm, state, account, scan)
     harvest_results.extend(_proactive_repairs(client, llm, state, account, scan))
-    sync_summary = sync_tpsl(client, account)
+    harvest_results.extend(manual_results)
+    manual_inst_ids = set(state.get("_manual_tpsl", {}) or {})
+    sync_summary = sync_tpsl(client, account, manual_inst_ids=manual_inst_ids)
     if sync_summary.get("attached") or sync_summary.get("orphan_cancelled"):
         log_event(
             "trade",

@@ -249,9 +249,10 @@ class BlofinClient:
         tp: float,
         sl: float,
     ) -> dict[str, Any]:
-        pos_side = position_side or self.position_side_for_order(
-            "sell" if close_side == "sell" else "buy"
-        )
+        # close_side is the side that will close the position.
+        # positionSide must refer to the OPEN position side (buy→long, sell→short in hedge mode).
+        open_side = "buy" if close_side == "sell" else "sell"
+        pos_side = position_side or self.position_side_for_order(open_side)
         body = {
             "instId": inst_id,
             "marginMode": "cross",

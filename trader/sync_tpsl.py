@@ -56,20 +56,24 @@ def sync_tpsl(
     *,
     tp_pct: float = 5.0,
     sl_pct: float = 2.0,
+    manual_inst_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Reconcile live pending TPSL orders with current open positions.
 
     Returns a summary dict with counts and actions taken.
     """
+    manual_inst_ids = manual_inst_ids or set()
     cancelled: list[str] = []
     attached: list[dict[str, Any]] = []
 
-    # 1) Build position map: inst_id -> close_side
+    # 1) Build position map: inst_id -> close_side, but skip manual managed symbols
     positions = [p for p in (account.get("positions") or []) if float(p.get("size") or p.get("positions") or 0) != 0]
     needed: dict[str, str] = {}
     for pos in positions:
         inst = str(pos.get("instId") or "")
         if not inst:
+            continue
+        if inst in manual_inst_ids:
             continue
         needed[inst] = _pos_close_side(pos)
 
@@ -164,6 +168,8 @@ def sync_tpsl(
     for pos in positions:
         inst = str(pos.get("instId") or "")
         if not inst:
+            continue
+        if inst in manual_inst_ids:
             continue
         side = _pos_close_side(pos)
         rows = live_map.get(inst) or []

@@ -68,24 +68,16 @@ def compute_tpsl_triggers(
     if int(leverage) > 10:
         sl_r = min(sl_r, 0.015)
 
-    # Small buffer so exchange accepts triggers vs last price.
-    # Exchange validates triggers vs the latest trading price (not necessarily
-    # the mark). Use a slightly larger buffer to reduce "tp/sl trigger price"
-    # rejections.
-    buf = 0.004
-
+    # ATR-based TP/SL like backtest: no fixed buffer that overrides intended %.
+    # Exchange validates triggers vs last price; use the exact intended distances.
     if side == "buy":
         close_side = "sell"
         tp = mark * (1 + tp_r)
         sl = mark * (1 - sl_r)
-        tp = max(tp, mark * (1 + buf))
-        sl = min(sl, mark * (1 - buf))
     else:
         close_side = "buy"
         tp = mark * (1 - tp_r)
         sl = mark * (1 + sl_r)
-        tp = min(tp, mark * (1 - buf))
-        sl = max(sl, mark * (1 + buf))
 
     return tp, sl, close_side
 
