@@ -17,12 +17,12 @@ if (-not (Test-Path $desktop)) {
 
 $shortcuts = @(
     @{
-        Name = "LLM KnightTrader Start.lnk"
+        Name = "Start LLM KnightTrader.lnk"
         Target = Join-Path $LauncherDir "Start LLM KnightTrader.bat"
         Description = "Start LLM KnightTrader trading stack"
     },
     @{
-        Name = "LLM KnightTrader Stop.lnk"
+        Name = "Stop LLM KnightTrader.lnk"
         Target = Join-Path $LauncherDir "Stop LLM KnightTrader.bat"
         Description = "Stop LLM KnightTrader trading stack"
     }
