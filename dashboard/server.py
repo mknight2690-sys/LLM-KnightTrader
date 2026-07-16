@@ -496,7 +496,7 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
         log_event("system", "Manual repair request", req.message[:2000], {"source": "dashboard_chat"})
         log_event("chat", CHAT_AGENT_NAME, "Repair tech is thinking…", {"status": "thinking"})
         try:
-            llm = LLMWrapper(provider_priority=("openrouter",), pool_name="dashboard_repair", openrouter_models=["openai/gpt-oss-20b:free"])
+            llm = LLMWrapper(provider_priority=("nous",), pool_name="dashboard_repair", nvidia_model="stepfun/step-3.7-flash:free")
             resp = llm.chat(
                 messages=[{"role": "user", "content": req.message}],
                 system=REPAIR_CHAT_SYSTEM,
@@ -540,7 +540,7 @@ def _run_chat(req: ChatRequest) -> dict[str, Any]:
     # --- Normal chat: route to the trading/chat LLM (Gemini 2.5 Pro primary) ---
     log_event("chat", CHAT_AGENT_NAME, "Thinking…", {"status": "thinking"})
     try:
-        llm = LLMWrapper(provider_priority=("openrouter",), pool_name="dashboard_chat", openrouter_models=["openai/gpt-oss-20b:free"])
+        llm = LLMWrapper(provider_priority=("nous",), pool_name="dashboard_chat", nvidia_model="stepfun/step-3.7-flash:free")
         context = _build_chat_context(state, account)
         t0 = time.time()
         resp = llm.chat(

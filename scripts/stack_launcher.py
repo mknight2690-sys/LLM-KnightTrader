@@ -141,7 +141,12 @@ def _popen_module(module: str, *, log_file: str | None = None) -> subprocess.Pop
 
     python_bin = _trader_python()
 
-    kwargs: dict = {"cwd": str(ROOT)}
+    env = dict(os.environ)
+    root_str = str(ROOT)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in [root_str, os.path.join(root_str, "src"), env.get("PYTHONPATH", "")] if p
+    )
+    kwargs: dict = {"cwd": str(ROOT), "env": env}
 
     if log_file:
 

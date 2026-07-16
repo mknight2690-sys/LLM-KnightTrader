@@ -717,6 +717,48 @@ def _enforce_manual_tpsl(
     return results
 
 
+def _harvest_winners(
+    client: BlofinClient,
+    llm: LLMWrapper,
+    state: dict[str, Any],
+    account: dict[str, Any],
+    scan: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Deterministic harvest of winners already above the NTP floor."""
+    positions = enrich_positions_for_harvest(
+        account.get("positions", []),
+        account.get("positions_raw"),
+    )
+    account["positions"] = positions
+    targets = list_harvestable(positions)
+    if not targets:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for pos in targets:
+        if _record_close(client, results, pos, state, llm, account, scan):
+            log_event(
+                "trade",
+                "Harvested winner",
+                f"{pos.get('instId')} NTP {position_pnl_pct(pos):.2f}%",
+                {"instId": pos.get("instId"), "ntp_pct": position_pnl_pct(pos)},
+            )
+    if results:
+        _refresh_account_after_trade(client)
+        fresh = client.parse_account_snapshot(force=True)
+        account.update(fresh)
+        account["_scan"] = scan
+        for tr in results:
+            tr["ts"] = time.time()
+            append_trade(state, tr)
+        record_execution(
+            state,
+            {"action": "close_all", "instId": None, "reasoning": "harvest winners"},
+            results,
+        )
+    return results
+
+
 def _proactive_repairs(
     client: BlofinClient,
     llm: LLMWrapper,
@@ -884,8 +926,8 @@ def run_cycle(client: BlofinClient, llm: LLMWrapper, state: dict[str, Any]) -> d
     account["_scan"] = scan
 
     manual_results = _enforce_manual_tpsl(client, state, account)
-    harvest_results = _auto_harvest_winners(client, llm, state, account, scan)
-    harvest_results.extend(_proactive_repairs(client, llm, state, account, scan))
+    harvest_results = _harvest_winners(client, llm, state, account, scan)
+    harvest_results.extend(_proactive_repairs(client, llm, state, account, scan, decision=None))
     harvest_results.extend(manual_results)
     manual_inst_ids = set(state.get("_manual_tpsl", {}) or {})
     sync_summary = sync_tpsl(client, account, manual_inst_ids=manual_inst_ids)
