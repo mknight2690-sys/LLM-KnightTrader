@@ -612,6 +612,19 @@ def _execute_decision(
     return results
 
 
+def _recover_orphan_positions(
+    client: BlofinClient,
+    state: dict[str, Any],
+    account: dict[str, Any],
+    llm: LLMWrapper,
+) -> None:
+    """Ensure any open positions have live TP/SL protection at startup."""
+    try:
+        _repair_missing_tpsl(client, state, account)
+    except Exception as exc:
+        log_event("error", "Orphan TP/SL recovery failed", str(exc)[:220])
+
+
 def _repair_missing_tpsl(
     client: BlofinClient,
     state: dict[str, Any],
