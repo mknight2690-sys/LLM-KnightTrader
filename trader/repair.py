@@ -947,15 +947,15 @@ def _deterministic_repair_plan(incident: dict[str, Any]) -> dict[str, Any] | Non
         }
 
     if phase == "proactive_anomaly":
+        gaps = incident.get("gaps") or []
+        real_gaps = [g for g in gaps if isinstance(g, dict) and g.get("instId")]
+        if not real_gaps:
+            return None
         actions: list[dict[str, Any]] = [
             {"type": "refresh_account", "params": {}},
         ]
-        for gap in incident.get("gaps") or []:
-            inst = gap.get("instId") if isinstance(gap, dict) else None
-            if inst:
-                actions.append({"type": "retry_close", "params": {"instId": inst}})
-        if len(actions) == 1:
-            actions.append({"type": "bootstrap_account_cache", "params": {}})
+        for gap in real_gaps:
+            actions.append({"type": "retry_close", "params": {"instId": gap["instId"]}})
         return {
             "diagnosis": "Proactive anomaly — harvest winners LLM flagged or gaps detected",
             "actions": actions[:5],
