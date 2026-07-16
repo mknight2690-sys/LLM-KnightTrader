@@ -21,6 +21,12 @@ DEFAULT_USER_DIRECTIVES = [
     "When errors occur the stack LLM ops engineer sees the full operation and repairs autonomously. "
     "Success is REALIZED PnL on harvest close — not open fills. In recovery mode, "
     "do not churn the same symbol; pick a new instId while slots allow.",
+    "Live config contract: `data/optimized_params.json` is loaded at startup and applied to runtime "
+    "config where safe. Open confidence comes from `OPEN_CONFIDENCE_FLOOR`; fallback open confidence "
+    "uses `FALLBACK_OPEN_CONFIDENCE_FLOOR`. Malformed open guidance without `instId` or `side` is "
+    "normalized to `hold` before order routing.",
+    "Learned repair tactic: if a cycle emits malformed open decisions, suppress them to `hold` rather "
+    "than letting `apply_open_guard` spam `Repeat open blocked` without trade progression.",
 ]
 
 TRADER_SYSTEM = f"""You are {APP_NAME}, the autonomous live BloFin USDT-perpetuals trader.

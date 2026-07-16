@@ -98,7 +98,7 @@ REPAIR_ACTION_CATALOG = [
     },
     {
         "type": "wait_llm_cooldown",
-        "description": "Wait for OpenRouter/Groq/Gemini cooldown to clear. params: max_wait (default 45).",
+        "description": "Wait for provider cooldown to clear. params: max_wait (default 45).",
     },
     {
         "type": "retry_close",
