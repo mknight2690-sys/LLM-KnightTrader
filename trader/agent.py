@@ -1115,6 +1115,30 @@ def run_cycle(client: BlofinClient, llm: LLMWrapper, state: dict[str, Any]) -> d
 
     if account["equity"] >= TARGET_EQUITY:
         log_event("system", "TARGET REACHED", f"Equity ${account['equity']:,.2f}")
+    if account["equity"] >= 300.0:
+        log_event("system", "STRETCH TARGET REACHED", f"Equity ${account['equity']:,.2f}")
+
+    if not trade_results and str(decision.get("action", "hold") or "hold").lower() == "hold":
+        try:
+            from trader.edge_driver import try_edge_decision
+            edge = try_edge_decision(state, account, scan, llm)
+            if edge:
+                edge_results = _execute_decision(client, edge.as_dict(), account, state, llm)
+                for tr in edge_results:
+                    tr["ts"] = time.time()
+                    append_trade(state, tr)
+                all_trade_results.extend(edge_results)
+                record_execution(state, edge.as_dict(), edge_results)
+        except Exception as exc:
+            log_event("error", "Edge driver failed", str(exc)[:220])
+
+    try:
+        from trader.self_healing import cycle_self_heal
+        heal = cycle_self_heal(state)
+        if heal.get("repaired") or heal.get("actions"):
+            log_event("system", "Self-heal cycle", json.dumps(heal, default=str)[:500])
+    except Exception as exc:
+        log_event("error", "Self-heal cycle failed", str(exc)[:220])
 
     return {"account": account, "decision": decision, "trades": trade_results}
 
@@ -1163,17 +1187,31 @@ def main() -> None:
         "to satisfy min contract margin; prefers affordable low-notional perps."
     )
     save_state(state)
+
     llm = LLMWrapper(
         provider_priority=("nous",),
         pool_name="trader",
         nvidia_model="stepfun/step-3.7-flash:free",
     )
     log_event("system", "LLM pool ready", json.dumps(llm.status()))
+    try:
+        smoke = llm.chat(
+            messages=[{"role": "user", "content": "Return only the word OK."}],
+            system="Return only the word OK.",
+            max_tokens=5,
+        )
+        log_event("system", "Startup LLM smoke OK", smoke.text)
+        record_llm_success(state, getattr(smoke, "provider", "startup"))
+    except Exception as exc:
+        log_event("error", "Startup LLM smoke FAILED", str(exc)[:220])
+        record_llm_failure(state, f"startup_smoke_failed:{exc}")
 
-    from blofin.account_cache import get_account_snapshot
+    from blofin.account_cache import get_account_snapshot, cache_age_sec
 
     startup_account = get_account_snapshot(force=True)
+    _recover_orphan_positions(client, state, startup_account, llm)
     ensure_baseline_armed(state, startup_account)
+    state.setdefault("_last_self_heal", {})
     save_state(state)
     log_event(
         "system",
