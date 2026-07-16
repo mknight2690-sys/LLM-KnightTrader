@@ -101,6 +101,81 @@ if _BH_ENV is not None:
     BLOHUNTER_HARVEST_NTP_PCT = float(_BH_ENV)
 else:
     BLOHUNTER_HARVEST_NTP_PCT = 5.0
+_OPEN_ENV = os.environ.get("KNIGHTTRADER_OPEN_CONFIDENCE_FLOOR")
+if _OPEN_ENV is not None:
+    OPEN_CONFIDENCE_FLOOR = float(_OPEN_ENV)
+_FALLBACK_ENV = os.environ.get("KNIGHTTRADER_FALLBACK_OPEN_CONFIDENCE_FLOOR")
+if _FALLBACK_ENV is not None:
+    FALLBACK_OPEN_CONFIDENCE_FLOOR = float(_FALLBACK_ENV)
+MAX_POSITIONS = int(os.environ.get("KNIGHTTRADER_MAX_POSITIONS", "12"))
+MAX_EXPOSURE_PCT = float(os.environ.get("KNIGHTTRADER_MAX_EXPOSURE_PCT", "0.85"))
+TRAILING_SL_PCT = float(os.environ.get("KNIGHTTRADER_TRAILING_SL_PCT", "0.012"))
+BREAKEVEN_SL_PCT = float(os.environ.get("KNIGHTTRADER_BREAKEVEN_SL_PCT", "0.008"))
+
+def apply_best_params(params: dict[str, Any]) -> None:
+    """Override runtime config with best available backtest params when present."""
+    if not isinstance(params, dict):
+        return
+    if "TRADE_MAX_LEVERAGE" in params:
+        global TRADE_MAX_LEVERAGE
+        try:
+            TRADE_MAX_LEVERAGE = int(params["TRADE_MAX_LEVERAGE"])
+        except (TypeError, ValueError):
+            pass
+    if "MARGIN_USE_RATIO" in params:
+        global MARGIN_USE_RATIO
+        try:
+            MARGIN_USE_RATIO = float(params["MARGIN_USE_RATIO"])
+        except (TypeError, ValueError):
+            pass
+    if "BLOHUNTER_HARVEST_NTP_PCT" in params:
+        global BLOHUNTER_HARVEST_NTP_PCT
+        try:
+            BLOHUNTER_HARVEST_NTP_PCT = float(params["BLOHUNTER_HARVEST_NTP_PCT"])
+        except (TypeError, ValueError):
+            pass
+    if "OPEN_CONFIDENCE_FLOOR" in params:
+        global OPEN_CONFIDENCE_FLOOR
+        try:
+            OPEN_CONFIDENCE_FLOOR = float(params["OPEN_CONFIDENCE_FLOOR"])
+        except (TypeError, ValueError):
+            pass
+    if "FALLBACK_OPEN_CONFIDENCE_FLOOR" in params:
+        global FALLBACK_OPEN_CONFIDENCE_FLOOR
+        try:
+            FALLBACK_OPEN_CONFIDENCE_FLOOR = float(params["FALLBACK_OPEN_CONFIDENCE_FLOOR"])
+        except (TypeError, ValueError):
+            pass
+    if "MAX_POSITIONS" in params:
+        global MAX_POSITIONS
+        try:
+            MAX_POSITIONS = int(params["MAX_POSITIONS"])
+        except (TypeError, ValueError):
+            pass
+    if "MAX_EXPOSURE_PCT" in params:
+        global MAX_EXPOSURE_PCT
+        try:
+            MAX_EXPOSURE_PCT = float(params["MAX_EXPOSURE_PCT"])
+        except (TypeError, ValueError):
+            pass
+    if "TRAILING_SL_PCT" in params:
+        global TRAILING_SL_PCT
+        try:
+            TRAILING_SL_PCT = float(params["TRAILING_SL_PCT"])
+        except (TypeError, ValueError):
+            pass
+    if "BREAKEVEN_SL_PCT" in params:
+        global BREAKEVEN_SL_PCT
+        try:
+            BREAKEVEN_SL_PCT = float(params["BREAKEVEN_SL_PCT"])
+        except (TypeError, ValueError):
+            pass
+    if "TRADER_LOOP_SEC" in params:
+        global TRADER_LOOP_SEC
+        try:
+            TRADER_LOOP_SEC = float(params["TRADER_LOOP_SEC"])
+        except (TypeError, ValueError):
+            pass
 
 # LLM HTTP: no short timeouts — slow/free models may take minutes.
 LLM_HTTP_TIMEOUT_SEC = float(os.environ.get("KNIGHTTRADER_LLM_HTTP_TIMEOUT_SEC", "600"))

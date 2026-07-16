@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from activity_log import log_event, get_recent, load_history
 from blofin.client import BlofinClient
-from config import APP_NAME, ACCOUNT_REFRESH_SEC, MISSION_PROMPT, TARGET_EQUITY, TRADE_MAX_LEVERAGE, TRADE_MODE, TRADER_LOOP_SEC
+from config import APP_NAME, ACCOUNT_REFRESH_SEC, MISSION_PROMPT, TARGET_EQUITY, TRADE_MAX_LEVERAGE, TRADE_MODE, TRADER_LOOP_SEC, apply_best_params
 from llm.wrapper import LLMWrapper
 from trader.prompts import DEFAULT_USER_DIRECTIVES, TRADER_SYSTEM
 from trader.blohunter_knowledge import load_blohunter_tactics
@@ -1136,6 +1136,7 @@ def main() -> None:
     if not state.get("lessons"):
         learn_from_activity_tail(state, tail_lines=800)
     bootstrap_order_guard_from_trades(state)
+    apply_best_params(best_params or {})
     state.setdefault("best_params", best_params)
     state.setdefault("optimized_params_context", context)
     if state.get("peak_equity"):
