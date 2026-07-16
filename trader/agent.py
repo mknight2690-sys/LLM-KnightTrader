@@ -1062,6 +1062,21 @@ def run_cycle(client: BlofinClient, llm: LLMWrapper, state: dict[str, Any]) -> d
         append_research(state, f"Strategy: {decision['strategy_update']}")
         log_event("research", "Strategy update", decision["strategy_update"][:800])
 
+    if str(decision.get("action", "hold") or "hold").lower() == "open" and (
+        not decision.get("instId") or not decision.get("side")
+    ):
+        decision = {
+            "research": decision.get("research", ""),
+            "strategy_update": decision.get("strategy_update", ""),
+            "action": "hold",
+            "instId": None,
+            "side": None,
+            "size_contracts": None,
+            "tp_pct": decision.get("tp_pct"),
+            "sl_pct": decision.get("sl_pct"),
+            "confidence": decision.get("confidence", 0),
+            "reasoning": "malformed open guidance suppressed to avoid repeated guard spam",
+        }
     decision = apply_open_guard(state, account, decision)
 
     log_event(
