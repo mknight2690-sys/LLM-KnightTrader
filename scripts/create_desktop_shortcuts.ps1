@@ -1,33 +1,36 @@
-# Create Start / Stop shortcuts on the Windows desktop.
+# Create Start / Stop shortcuts on the OneDrive Desktop when available,
+# otherwise fall back to the normal Desktop folder.
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $LauncherDir = Join-Path $ProjectRoot "launcher"
-$Desktop = Join-Path $env:USERPROFILE "OneDrive\Desktop"
-if (-not (Test-Path $Desktop)) {
-    $Desktop = [Environment]::GetFolderPath("Desktop")
+$desktopCandidates = @(
+    $env:OneDrive,
+    [Environment]::GetFolderPath("Desktop")
+) | Where-Object { $_ -and (Test-Path $_) }
+if (-not $desktopCandidates) {
+    throw "Desktop location not found."
+}
+$desktop = Join-Path $desktopCandidates[0] "Desktop"
+if (-not (Test-Path $desktop)) {
+    $desktop = $desktopCandidates[0]
 }
 
 $shortcuts = @(
     @{
-        Name = "Start LLM KnightTrader.lnk"
+        Name = "LLM KnightTrader Start.lnk"
         Target = Join-Path $LauncherDir "Start LLM KnightTrader.bat"
         Description = "Start LLM KnightTrader trading stack"
     },
     @{
-        Name = "Stop LLM KnightTrader.lnk"
+        Name = "LLM KnightTrader Stop.lnk"
         Target = Join-Path $LauncherDir "Stop LLM KnightTrader.bat"
         Description = "Stop LLM KnightTrader trading stack"
-    },
-    @{
-        Name = "LLM KnightTrader Agent CLI.lnk"
-        Target = Join-Path $LauncherDir "Agent CLI.bat"
-        Description = "LLM KnightTrader Agent CLI - NVIDIA GLM 5.1 Systems Operator"
     }
 )
 
 $shell = New-Object -ComObject WScript.Shell
 foreach ($item in $shortcuts) {
-    $path = Join-Path $Desktop $item.Name
+    $path = Join-Path $desktop $item.Name
     $lnk = $shell.CreateShortcut($path)
     $lnk.TargetPath = $item.Target
     $lnk.WorkingDirectory = $ProjectRoot
