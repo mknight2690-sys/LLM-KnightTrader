@@ -368,7 +368,6 @@ async def api_baseline_set(req: BaselineSetRequest) -> dict[str, Any]:
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     state = load_state()
-    llm = LLMWrapper(provider_priority=("openrouter",), pool_name="dashboard_status", openrouter_models=["openai/gpt-oss-20b:free"])
     account = await asyncio.to_thread(read_account_cached)
     return {
         "app_name": APP_NAME,
@@ -383,7 +382,6 @@ async def api_status() -> dict[str, Any]:
             "research_count": len(state.get("research_notes", [])),
             "trade_count": len(state.get("trades", [])),
         },
-        "llm": llm.status(),
         "performance_baseline": progress_summary(state, account),
     }
 
