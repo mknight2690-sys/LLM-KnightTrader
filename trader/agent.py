@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from activity_log import log_event, get_recent, load_history
 from blofin.client import BlofinClient
-from config import APP_NAME, ACCOUNT_REFRESH_SEC, MISSION_PROMPT, TARGET_EQUITY, TRADE_MAX_LEVERAGE, TRADE_MODE, TRADER_LOOP_SEC, apply_best_params
+from config import APP_NAME, ACCOUNT_REFRESH_SEC, MISSION_PROMPT, TARGET_EQUITY, TRADE_MAX_LEVERAGE, TRADE_MODE, TRADER_LOOP_SEC, OPEN_CONFIDENCE_FLOOR, apply_best_params
 from llm.wrapper import LLMWrapper
 from trader.prompts import DEFAULT_USER_DIRECTIVES, TRADER_SYSTEM
 from trader.blohunter_knowledge import load_blohunter_tactics
@@ -426,8 +426,8 @@ def _execute_decision(
         return results
 
     confidence = float(decision.get("confidence") or 0)
-    if confidence < 60:
-        log_event("trade", "Open skipped", f"confidence {confidence} < 60")
+    if confidence < OPEN_CONFIDENCE_FLOOR:
+        log_event("trade", "Open skipped", f"confidence {confidence} < {OPEN_CONFIDENCE_FLOOR}")
         return results
 
     sizing = budget_for_decision(account, decision)
