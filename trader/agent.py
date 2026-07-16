@@ -24,6 +24,7 @@ from trader.blohunter_knowledge import load_blohunter_tactics
 from trader.learning import learn_from_activity_tail, learn_from_cycle, lessons_digest
 from trader.margin import affordable_setups, annotate_scan_row, format_contracts, pick_best_affordable, plan_open
 from trader.health import acquire_trader_lock, normalize_decision, release_trader_lock
+from trader.optimized_params import best_params_context, load_best_params
 from trader.repair import (
     llm_triage_and_repair,
     record_llm_failure,
@@ -425,8 +426,8 @@ def _execute_decision(
         return results
 
     confidence = float(decision.get("confidence") or 0)
-    if confidence < 65:
-        log_event("trade", "Open skipped", f"confidence {confidence} < 65")
+    if confidence < 60:
+        log_event("trade", "Open skipped", f"confidence {confidence} < 60")
         return results
 
     sizing = budget_for_decision(account, decision)
@@ -477,14 +478,14 @@ def _execute_decision(
             plan = pick_best_affordable(
                 scan_rows, account, inst_id=str(row["instId"]), side=str(row["side"])
             )
-            if plan and plan.inst_id != inst:
-                log_event(
-                    "trade",
-                    "Open redirected",
-                    f"{inst} -> {plan.inst_id} (affordable @ {plan.leverage}x)",
-                )
-                inst = plan.inst_id
-                side = plan.side
+    if plan and plan.inst_id != inst:
+        log_event(
+            "trade",
+            "Open redirected",
+            f"{inst} -> {plan.inst_id} (affordable @ {plan.leverage}x)",
+        )
+        inst = plan.inst_id
+        side = plan.side
     if not plan:
         log_event("trade", "Open skipped", f"no affordable plan for {inst} (${margin_budget:.2f} budget)", sizing)
         return results
@@ -662,46 +663,6 @@ def _repair_missing_tpsl(
             append_trade(state, row)
 
 
-def _auto_harvest_winners(
-    client: BlofinClient,
-    llm: LLMWrapper,
-    state: dict[str, Any],
-    account: dict[str, Any],
-    scan: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """BloHunter: harvest winners at +NTP% each cycle before LLM decision."""
-    results: list[dict[str, Any]] = []
-    positions = enrich_positions_for_harvest(
-        account.get("positions", []),
-        account.get("positions_raw"),
-    )
-    account["positions"] = positions
-    for pos in list_harvestable(positions):
-        ok_close, reason = can_close_position(pos, account)
-        if not ok_close:
-            continue
-        if _record_close(client, results, pos, state, llm, account, scan):
-            log_event("trade", "Auto-harvest winner", reason, {"instId": pos.get("instId")})
-    if results:
-        _refresh_account_after_trade(client)
-        fresh = client.parse_account_snapshot(force=True)
-        account.update(fresh)
-        account["_scan"] = scan
-        account["positions"] = enrich_positions_for_harvest(
-            account.get("positions", []),
-            account.get("positions_raw"),
-        )
-        for tr in results:
-            tr["ts"] = time.time()
-            append_trade(state, tr)
-        record_execution(
-            state,
-            {"action": "close_all", "instId": None, "reasoning": "auto-harvest winners"},
-            results,
-        )
-    return results
-
-
 def _enforce_manual_tpsl(
     client: BlofinClient,
     state: dict[str, Any],
@@ -737,26 +698,12 @@ def _enforce_manual_tpsl(
         if mark <= 0:
             try:
                 rows = client.get_candles(inst, "1m", "2")
-                if rows:
-                    mark = float(rows[-1][4])
+                mark = float(rows[-1][4])
             except Exception:
-                pass
-        if mark <= 0:
-            continue
+                continue
 
-        hit_tp = False
-        hit_sl = False
-        if side == "buy":
-            if mark >= tp:
-                hit_tp = True
-            elif mark <= sl:
-                hit_sl = True
-        else:
-            if mark <= tp:
-                hit_tp = True
-            elif mark >= sl:
-                hit_sl = True
-
+        hit_tp = mark >= tp if side == "buy" else mark <= tp
+        hit_sl = mark <= sl if side == "buy" else mark >= sl
         if not hit_tp and not hit_sl:
             continue
 
@@ -889,7 +836,7 @@ def _fallback_decision(
             "size_contracts": None,
             "tp_pct": 2.0,
             "sl_pct": 1.0,
-            "confidence": 70,
+            "confidence": 55,
             "reasoning": f"Rule-based {'short' if best.get('side') == 'sell' else 'long'} momentum fallback",
         }
         ok, _ = validate_open(state, account, candidate)
@@ -1116,20 +1063,28 @@ def run_cycle(client: BlofinClient, llm: LLMWrapper, state: dict[str, Any]) -> d
 
 
 def main() -> None:
-    import atexit
+    try:
+        best_params = load_best_params()
+        context = best_params_context()
+    except Exception as exc:  # noqa: BLE001
+        best_params = {}
+        context = {"loaded": False, "error": str(exc)}
 
     if not acquire_trader_lock():
         msg = f"{APP_NAME}: another trader.agent is already running — exiting"
         print(msg, file=sys.stderr, flush=True)
         log_event("system", "Trader start blocked", msg)
         sys.exit(1)
-    atexit.register(release_trader_lock)
 
     load_history()
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 
     log_event("system", f"{APP_NAME} started", MISSION_PROMPT[:200])
+    if context.get("loaded"):
+        log_event("system", "Optimized params loaded", json.dumps(context)[:1200])
+    if context.get("error"):
+        log_event("error", "Optimized params load failed", context["error"])
     client = BlofinClient()
     mode = client.ensure_net_position_mode()
     log_event("system", "BloFin position mode", f"{mode} (orders use positionSide=net)")
@@ -1139,6 +1094,8 @@ def main() -> None:
     if not state.get("lessons"):
         learn_from_activity_tail(state, tail_lines=800)
     bootstrap_order_guard_from_trades(state)
+    state.setdefault("best_params", best_params)
+    state.setdefault("optimized_params_context", context)
     if state.get("peak_equity"):
         state["_last_lesson_peak"] = float(state.get("_last_lesson_peak") or state["peak_equity"])
     save_state(state)
@@ -1149,9 +1106,9 @@ def main() -> None:
     )
     save_state(state)
     llm = LLMWrapper(
-        provider_priority=("openrouter",),
+        provider_priority=("nous",),
         pool_name="trader",
-        openrouter_models=["meta-llama/llama-3.1-405b-instruct:free"],
+        nvidia_model="stepfun/step-3.7-flash:free",
     )
     log_event("system", "LLM pool ready", json.dumps(llm.status()))
 

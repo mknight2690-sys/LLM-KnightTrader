@@ -6,9 +6,6 @@ from typing import Any
 
 from config import BLOHUNTER_HARVEST_NTP_PCT
 
-# Margin stress: only then may losers be closed (emergency).
-MARGIN_STRESS_RATIO = 0.85
-
 ANOMALY_KEYWORDS = (
     "bug",
     "not in harvestable",
@@ -156,7 +153,7 @@ def margin_stress(account: dict[str, Any]) -> bool:
     available = float(account.get("available") or 0)
     if equity <= 0:
         return False
-    return available / equity < (1.0 - MARGIN_STRESS_RATIO)
+    return available / equity < 0.15
 
 
 def harvest_context(positions: list[dict[str, Any]], positions_raw: dict[str, Any] | None = None) -> dict[str, Any]:

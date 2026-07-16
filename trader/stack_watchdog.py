@@ -230,7 +230,7 @@ def _repair_with_llm(issues: list[dict[str, Any]]) -> tuple[bool, str]:
 
         state = load_state()
         client = BlofinClient()
-        llm = LLMWrapper(provider_priority=("openrouter",), openrouter_models=["openai/gpt-oss-20b:free"])
+        llm = LLMWrapper(provider_priority=("nous",), nvidia_model="stepfun/step-3.7-flash:free")
         from blofin.account_cache import read_account_cached
 
         account = read_account_cached()

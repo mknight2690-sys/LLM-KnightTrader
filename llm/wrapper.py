@@ -12,7 +12,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from activity_log import log_event
-from config import APP_NAME, LLM_HTTP_TIMEOUT_SEC
+from config import (
+    APP_NAME,
+    LLM_HTTP_TIMEOUT_SEC,
+    NOUS_STEPFUN_BASE_URL,
+    NOUS_STEPFUN_KEY_PATH,
+    NOUS_STEPFUN_MODEL,
+)
 from credentials import discover_llm_env_keys, discover_openrouter_keys
 from llm.model_registry import FREE_OPENROUTER_MODELS, resolve_model_for_agent, _RotationState
 
@@ -37,32 +43,26 @@ class LLMWrapper:
         self,
         *,
         openrouter_models: list[str] | None = None,
-        provider_priority: tuple[str, ...] = ("nvidia", "openrouter", "groq", "gemini"),
+        provider_priority: tuple[str, ...] = ("nous",),
         pool_name: str | None = None,
-        nvidia_model: str = "z-ai/glm-5.1",
+        nvidia_model: str = NOUS_STEPFUN_MODEL,
     ) -> None:
         self._or_keys = discover_openrouter_keys()
         self._env_keys = discover_llm_env_keys()
-        # If pool_name matches an agent in the registry, pin to that agent's model.
         self._pool_name = pool_name
-        if pool_name and "openrouter" in provider_priority:
-            pinned = resolve_model_for_agent(pool_name)
-            self._openrouter_models = [pinned]
-        else:
-            self._openrouter_models = openrouter_models or FREE_OPENROUTER_MODELS
+        self._openrouter_models = openrouter_models or FREE_OPENROUTER_MODELS
         self._provider_priority = provider_priority
         self._nvidia_model = nvidia_model
         self._cooldown: dict[str, float] = {}
         self._or_key_idx = 0
         self._model_idx = 0
         self._extra_models: list[str] = []
-        if self._or_keys:
-            log_event(
-                "system",
-                "OpenRouter pool ready",
-                f"{len(self._or_keys)} key(s), pinned={pool_name or 'none'}",
-                {"pool": self._pool_name, "models": self._openrouter_models},
-            )
+        log_event(
+            "system",
+            "LLM pool ready",
+            f"provider_priority={provider_priority} pool={pool_name or 'none'} model={nvidia_model}",
+            {"pool": self._pool_name, "models": self._openrouter_models},
+        )
 
     def _cooling(self, key: str, seconds: float = 90.0) -> None:
         self._cooldown[key] = time.time() + seconds
@@ -105,6 +105,14 @@ class LLMWrapper:
         if "choices" in data:
             msg = data["choices"][0].get("message") or {}
             text = (msg.get("content") or "").strip()
+            if not text:
+                reasoning_details = msg.get("reasoning_details") or []
+                for detail in reasoning_details:
+                    text = (detail.get("text") or "").strip()
+                    if text:
+                        break
+                if not text:
+                    text = (msg.get("reasoning") or "").strip()
             if not text:
                 raise RuntimeError("empty response")
             return text
@@ -352,6 +360,59 @@ class LLMWrapper:
             self._cooling(tag, 30.0)
             raise
 
+    def _try_nous(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        *,
+        json_mode: bool = False,
+    ) -> LLMResponse:
+        """Nous Portal / StepFun direct inference per agent."""
+        key = self._env_keys.get("NOUS_API_KEY")
+        if not key:
+            raise RuntimeError("no nous api key")
+        model = NOUS_STEPFUN_MODEL
+        tag = f"nous:{model}:{self._pool_name}"
+        if self._is_cooled(tag):
+            raise RuntimeError(f"nous {model} on cooldown")
+        t0 = time.time()
+        try:
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.4,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            url = f"{NOUS_STEPFUN_BASE_URL.rstrip('/')}/v1/chat/completions"
+            data = self._http_json(
+                url,
+                payload,
+                {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            text = self._extract_text(data)
+            latency = (time.time() - t0) * 1000
+            tag = f"nous:{model}:{self._pool_name}"
+            log_event(
+                "llm",
+                f"Nous {model}",
+                text[:240],
+                {"provider": "nous", "model": model, "pool": self._pool_name},
+            )
+            return LLMResponse(text=text, provider="nous", model=model, latency_ms=latency, raw=data)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 402, 403, 404):
+                self._cooling(tag, 120.0 if exc.code == 429 else 45.0)
+                raise RuntimeError(f"nous rate limited ({exc.code})")
+            raise
+        except Exception:
+            self._cooling(tag, 30.0)
+            raise
+
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -374,10 +435,12 @@ class LLMWrapper:
             ordered.append(self._try_groq)
         if "gemini" in self._provider_priority:
             ordered.append(self._try_gemini)
+        if "nous" in self._provider_priority:
+            ordered.append(self._try_nous)
 
         for fn in ordered:
             try:
-                if fn in (self._try_nvidia, self._try_openrouter, self._try_groq):
+                if fn in (self._try_nvidia, self._try_openrouter, self._try_groq, self._try_nous):
                     return fn(full_messages, max_tokens, json_mode=json_mode)
                 return fn(full_messages, max_tokens)
             except Exception as exc:
@@ -407,6 +470,8 @@ class LLMWrapper:
             routes.append(("groq", lambda: self._try_groq(full_messages, max_tokens, json_mode=json_mode)))
         if "gemini" in self._provider_priority and (self._env_keys.get("GEMINI_API_KEY") or self._env_keys.get("GOOGLE_API_KEY")):
             routes.append(("gemini", lambda: self._try_gemini(full_messages, max_tokens)))
+        if "nous" in self._provider_priority and self._env_keys.get("NOUS_API_KEY"):
+            routes.append(("nous", lambda: self._try_nous(full_messages, max_tokens, json_mode=json_mode)))
 
         if not routes:
             return self.chat(messages, max_tokens=max_tokens, system=system, json_mode=json_mode)

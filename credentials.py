@@ -132,4 +132,13 @@ def discover_llm_env_keys() -> dict[str, str]:
                     out["NVIDIA_API_KEY"] = key
             except Exception:
                 pass
+    if "NOUS_API_KEY" not in out:
+        nous_file = Path.home() / "OneDrive" / "Documents" / "Nous API Key Stepfun.txt"
+        if nous_file.is_file():
+            try:
+                key = nous_file.read_text(encoding="utf-8").strip()
+                if key:
+                    out["NOUS_API_KEY"] = key
+            except Exception:
+                pass
     return out

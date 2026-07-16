@@ -29,8 +29,16 @@ CANDLE_BAR = "1h"
 CANDLE_LIMIT = "1440"
 EMA_PERIOD = 50
 ATR_PERIOD = 14
-COOLDOWN_BARS = 24
+COOLDOWN_BARS = 12
 BACKTEST_DAYS = 30
+HARVEST_PCT = 0.05
+MAX_UNIVERSE = 486
+TREND_ATR_K = 0.45
+TP_RR = 3.0
+SL_RR = 1.0
+MIN_ATR_PCT = 0.0008
+MAX_TRADE_RISK_PCT = 0.5
+STRICT_EXIT = True
 
 
 def ema(values: list[float], period: int) -> list[float | None]:
@@ -99,8 +107,7 @@ def run_backtest() -> dict[str, Any]:
         and str(row.get("state", "")).lower() in ("live", "trading", "")
     })
     print(f"Universe: {len(usdt_swaps)} USDT swap instruments")
-
-    sample = usdt_swaps[:60] if len(usdt_swaps) > 60 else usdt_swaps
+    sample = usdt_swaps[:MAX_UNIVERSE]
     print(f"Testing sample: {len(sample)} assets")
 
     asset_candles: dict[str, list[dict[str, float]]] = {}
@@ -163,16 +170,20 @@ def run_backtest() -> dict[str, Any]:
                 continue
             candle = asset_candles[inst_id][idx]
             exit_price = None
+            entry = trade["entry"]
+            pnl_pct_to_date = 0.0
             if trade["side"] == "long":
+                pnl_pct_to_date = (candle["high"] - entry) / entry
                 if candle["low"] <= trade["sl"]:
                     exit_price = trade["sl"]
-                elif candle["high"] >= trade["tp"]:
-                    exit_price = trade["tp"]
+                elif pnl_pct_to_date >= HARVEST_PCT:
+                    exit_price = entry * (1 + HARVEST_PCT)
             else:
+                pnl_pct_to_date = (entry - candle["low"]) / entry
                 if candle["high"] >= trade["sl"]:
                     exit_price = trade["sl"]
-                elif candle["low"] <= trade["tp"]:
-                    exit_price = trade["tp"]
+                elif pnl_pct_to_date >= HARVEST_PCT:
+                    exit_price = entry * (1 - HARVEST_PCT)
             if exit_price is not None:
                 cval = trade["contract_value"]
                 pnl = trade["size"] * (exit_price - trade["entry"]) * cval if trade["side"] == "long" else trade["size"] * (trade["entry"] - exit_price) * cval
@@ -214,17 +225,20 @@ def run_backtest() -> dict[str, Any]:
             if ema_val is None or atr_val is None or atr_val <= 0:
                 continue
 
-            # Strict trend filter: close must be clearly above/below EMA + 0.5 ATR
-            if cur_close > ema_val + 0.5 * atr_val and prev_close > ema_val:
+            # Strict trend filter: close must be clearly above/below EMA + ATR
+            above_trend = cur_close > ema_val + TREND_ATR_K * atr_val and prev_close > ema_val - TREND_ATR_K * atr_val
+            below_trend = cur_close < ema_val - TREND_ATR_K * atr_val and prev_close < ema_val + TREND_ATR_K * atr_val
+            atr_quality = (atr_val / max(cur_close, 1e-9)) >= MIN_ATR_PCT
+            if above_trend and atr_quality:
                 side = "long"
                 entry_price = candles[idx]["open"]
-                sl = entry_price - atr_val
-                tp = entry_price + atr_val * RR_RATIO
-            elif cur_close < ema_val - 0.5 * atr_val and prev_close < ema_val:
+                sl = entry_price - SL_RR * atr_val
+                tp = entry_price + TP_RR * atr_val
+            elif below_trend and atr_quality:
                 side = "short"
                 entry_price = candles[idx]["open"]
-                sl = entry_price + atr_val
-                tp = entry_price - atr_val * RR_RATIO
+                sl = entry_price + SL_RR * atr_val
+                tp = entry_price - TP_RR * atr_val
             else:
                 continue
 
@@ -236,7 +250,7 @@ def run_backtest() -> dict[str, Any]:
             size = risk_usd / (price_risk * cval)
             notional = size * entry_price * cval
             fee_entry = notional * FEE_ROUND_TRIP
-            if fee_entry >= risk_usd * 0.5:
+            if fee_entry >= risk_usd * 0.5 or notional > equity * MAX_TRADE_RISK_PCT:
                 continue
             open_trades[inst_id] = {
                 "side": side,
@@ -255,7 +269,27 @@ def run_backtest() -> dict[str, Any]:
             continue
         last = candles[-1]
         cval = trade["contract_value"]
-        pnl = trade["size"] * (last["close"] - trade["entry"]) * cval if trade["side"] == "long" else trade["size"] * (trade["entry"] - last["close"]) * cval
+        entry = trade["entry"]
+        side = trade["side"]
+        if side == "long":
+            if last["high"] >= trade["tp"]:
+                exit_price = trade["tp"]
+            elif last["low"] <= trade["sl"]:
+                exit_price = trade["sl"]
+            elif STRICT_EXIT:
+                exit_price = last["close"]
+            else:
+                continue
+        else:
+            if last["low"] <= trade["tp"]:
+                exit_price = trade["tp"]
+            elif last["high"] >= trade["sl"]:
+                exit_price = trade["sl"]
+            elif STRICT_EXIT:
+                exit_price = last["close"]
+            else:
+                continue
+        pnl = trade["size"] * (exit_price - entry) * cval if side == "long" else trade["size"] * (entry - exit_price) * cval
         pnl -= trade["notional"] * FEE_ROUND_TRIP
         equity += pnl
         fee_paid += trade["notional"] * FEE_ROUND_TRIP

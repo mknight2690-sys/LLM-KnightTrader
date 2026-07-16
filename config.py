@@ -31,6 +31,11 @@ def _load_dotenv() -> None:
             os.environ[key] = val
 
 
+def _env_or(key: str, fallback: str) -> str:
+    val = os.environ.get(key)
+    return val if val is not None else fallback
+
+
 _load_dotenv()
 
 DEFAULT_CREDENTIALS_PATH = Path(
@@ -62,7 +67,7 @@ TARGET_EQUITY = float(
 )
 TRADER_LOOP_SEC = float(
     os.environ.get(
-        "KNIGHTTRADER_LOOP_SEC",
+        "KNIGHTTRADER_TRADER_LOOP_SEC",
         os.environ.get("HERMES_TRADER_LOOP_SEC", "60"),
     )
 )
@@ -85,13 +90,29 @@ LEVERAGE_LADDER = [
     if x.strip().isdigit()
 ] or [3, 5, 10, 15, 20, 30, 50]
 
+# Best-known optimizer-backed defaults.
+_TRADE_MAX_LEV_ENV = os.environ.get("KNIGHTTRADER_MAX_LEVERAGE")
+if _TRADE_MAX_LEV_ENV is not None:
+    TRADE_MAX_LEVERAGE = int(_TRADE_MAX_LEV_ENV)
+
 # BloHunter: harvest winners only at +NTP%.
-BLOHUNTER_HARVEST_NTP_PCT = float(os.environ.get("KNIGHTTRADER_HARVEST_NTP_PCT", "5.0"))
+_BH_ENV = os.environ.get("KNIGHTTRADER_HARVEST_NTP_PCT")
+if _BH_ENV is not None:
+    BLOHUNTER_HARVEST_NTP_PCT = float(_BH_ENV)
+else:
+    BLOHUNTER_HARVEST_NTP_PCT = 5.0
 
 # LLM HTTP: no short timeouts — slow/free models may take minutes.
 LLM_HTTP_TIMEOUT_SEC = float(os.environ.get("KNIGHTTRADER_LLM_HTTP_TIMEOUT_SEC", "600"))
-# Parallel repair LLM workers — race until one succeeds (no wall-clock cutoff).
+# Parallel repair LLM workers — race until one succeeds.
 REPAIR_LLM_PARALLEL = max(1, int(os.environ.get("KNIGHTTRADER_REPAIR_LLM_PARALLEL", "3")))
+# Nous Portal / StepFun provider routing.
+NOUS_STEPFUN_MODEL = os.environ.get("KNIGHTTRADER_NOUS_STEPFUN_MODEL", "stepfun/step-3.7-flash:free")
+NOUS_STEPFUN_BASE_URL = os.environ.get("KNIGHTTRADER_NOUS_BASE_URL", "https://inference-api.nousresearch.com")
+NOUS_STEPFUN_KEY_PATH = os.environ.get(
+    "KNIGHTTRADER_NOUS_KEY_PATH",
+    str(Path.home() / "OneDrive" / "Documents" / "Nous API Key Stepfun.txt"),
+)
 
 MISSION_PROMPT = (
     "research how to grow crypto futures account the fastest to get a baseline, "

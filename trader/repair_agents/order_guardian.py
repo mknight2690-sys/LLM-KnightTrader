@@ -323,8 +323,15 @@ def run_cycle(client, llm, state: dict) -> None:
                 side = "buy"
             elif side_raw in ("sell", "short"):
                 side = "sell"
+            elif side_raw in ("net", ""):
+                # Net position mode: derive close_side from signed size
+                try:
+                    raw_sz = float(pos.get("size", 0))
+                    side = "buy" if raw_sz < 0 else "sell"
+                except (TypeError, ValueError):
+                    side = "buy"
             else:
-                side = side_raw or "buy"
+                side = "buy"
 
             sz_raw = pos.get("sz", pos.get("contracts", pos.get("size", "")))
             try:
@@ -385,5 +392,5 @@ if __name__ == "__main__":
         run_cycle_fn=run_cycle,
         interval_sec=LOOP_SEC,
         llm_pool_name=AGENT_NAME,
-        openrouter_models=["openai/gpt-oss-20b:free"],
+        openrouter_model="openai/gpt-oss-20b:free",
     )

@@ -134,9 +134,9 @@ def agent_main(
     log(name, "Agent started", f"interval={interval_sec}s")
 
     llm = LLMWrapper(
-        provider_priority=("openrouter",),
+        provider_priority=("nous",),
         pool_name=llm_pool_name or name,
-        nvidia_model=openrouter_model,
+        nvidia_model="stepfun/step-3.7-flash:free",
     )
 
     # One-time startup smoke test: confirm OpenRouter is reachable.

@@ -3,25 +3,29 @@ import json
 
 c = BlofinClient()
 positions = c.get_positions()
+data = positions.get('data', [])
 
 print("=== LIVE POSITIONS WITH TP/SL STATUS ===")
-for p in positions:
-    if p.get('size', 0) != 0:
-        tp = p.get('tp_price', 'NONE')
-        sl = p.get('sl_price', 'NONE')
-        print(f"{p['instId']}: side={p['side']} size={p['size']} entry={p['entry']} TP={tp} SL={sl}")
+for p in data:
+    size = float(p.get('size', p.get('positions', 0)))
+    if size == 0:
+        continue
+    tp = p.get('tp_price', p.get('tpPrice', p.get('tpTriggerPrice', 'NONE')))
+    sl = p.get('sl_price', p.get('slPrice', p.get('slTriggerPrice', 'NONE')))
+    print(f"{p['instId']}: side={p.get('side', p.get('positionSide', '?'))} size={size} entry={p.get('averagePrice', p.get('entry', '?'))} TP={tp} SL={sl}")
 
 print()
 print("=== CHECKING OPEN ORDERS FOR TP/SL ===")
-for p in positions:
-    if p.get('size', 0) != 0:
-        orders = c.get_orders(instId=p['instId'], instType='SWAP')
-        tp_orders = [o for o in orders if o.get('ordType') == 'take_profit']
-        sl_orders = [o for o in orders if o.get('ordType') == 'stop_loss']
-        print(f"{p['instId']}: TP_orders={len(tp_orders)} SL_orders={len(sl_orders)}")
-        if tp_orders:
-            for o in tp_orders:
-                print(f"  TP: {o.get('tpTriggerPx', o.get('triggerPx', 'N/A'))} @ {o.get('px', 'N/A')}")
-        if sl_orders:
-            for o in sl_orders:
-                print(f"  SL: {o.get('slTriggerPx', o.get('triggerPx', 'N/A'))} @ {o.get('px', 'N/A')}")
+for p in data:
+    size = float(p.get('size', p.get('positions', 0)))
+    if size == 0:
+        continue
+    inst = p['instId']
+    orders = c.get_orders_tpsl_pending(inst_id=inst)
+    rows = orders.get('data') or []
+    tp_orders = [o for o in rows if o.get('side') and 'take_profit' in str(o.get('side', '')).lower()] or [o for o in rows if o.get('tpTriggerPrice')]
+    sl_orders = [o for o in rows if o.get('side') and 'stop_loss' in str(o.get('side', '')).lower()] or [o for o in rows if o.get('slTriggerPrice')]
+    # Better: just show any tpsl orders
+    print(f"{inst}: pending_tpsl_orders={len(rows)}")
+    for o in rows[:4]:
+        print(f"  tpslId={o.get('tpslId')} side={o.get('side')} state={o.get('state')} tp={o.get('tpTriggerPrice')} sl={o.get('slTriggerPrice')}")

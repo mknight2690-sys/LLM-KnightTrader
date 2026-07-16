@@ -343,5 +343,5 @@ if __name__ == "__main__":
         run_cycle_fn=run_cycle,
         interval_sec=LOOP_SEC,
         llm_pool_name=AGENT_NAME,
-        openrouter_models=["openai/gpt-oss-20b:free"],
+        openrouter_model="openai/gpt-oss-20b:free",
     )

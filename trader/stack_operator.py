@@ -289,7 +289,7 @@ def _escalate_to_repair_llm(issues: list[str]) -> tuple[bool, str]:
 
         state = load_state()
         client = BlofinClient()
-        llm = LLMWrapper(provider_priority=("openrouter",), openrouter_models=["openai/gpt-oss-20b:free"])
+        llm = LLMWrapper(provider_priority=("nous",), nvidia_model="stepfun/step-3.7-flash:free")
         account = read_account_cached()
         incident = {
             "phase": "stack_operator",

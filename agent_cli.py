@@ -512,9 +512,9 @@ def _format_system_prompt() -> str:
 def _call_llm(messages: list[dict[str, str]], auto: bool = False) -> dict[str, Any]:
     """Spawn a fresh LLMWrapper instance — isolated, no shared state."""
     llm = LLMWrapper(
-        provider_priority=("openrouter",),
+        provider_priority=("nous",),
         pool_name="agent_cli",
-        openrouter_models=["openai/gpt-oss-20b:free"],
+        nvidia_model="stepfun/step-3.7-flash:free",
     )
     resp = llm.chat(
         messages=messages,

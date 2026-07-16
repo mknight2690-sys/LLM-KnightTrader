@@ -11,12 +11,12 @@ from trader.pnl_tracker import drawdown_state, performance_summary
 from trader.sizing import ABSOLUTE_MIN_MARGIN, budget_for_decision, margin_budget_for_setup
 
 # Base cooldowns (seconds) — scaled up in sub-peak / recovery mode.
-OPEN_SAME_INST_COOLDOWN_SEC = 30 * 60
-FAILED_OPEN_COOLDOWN_SEC = 60 * 60
+OPEN_SAME_INST_COOLDOWN_SEC = 10 * 60
+FAILED_OPEN_COOLDOWN_SEC = 15 * 60
 DUPLICATE_DECISION_CYCLES = 2
-CHURN_AFTER_CLOSE_SEC = 15 * 60
-SYMBOL_DAILY_TOUCH_LIMIT_RECOVERY = 1
-SYMBOL_DAILY_TOUCH_LIMIT_SUBPEAK = 2
+CHURN_AFTER_CLOSE_SEC = 5 * 60
+SYMBOL_DAILY_TOUCH_LIMIT_RECOVERY = 2
+SYMBOL_DAILY_TOUCH_LIMIT_SUBPEAK = 4
 SYMBOL_LOOKBACK_SEC = 24 * 3600
 
 
@@ -58,9 +58,9 @@ def _history(state: dict[str, Any]) -> list[dict[str, Any]]:
 def _cooldown_multiplier(state: dict[str, Any], account: dict[str, Any]) -> float:
     dd = drawdown_state(account, state)
     if dd["recovery_mode"]:
-        return 4.0
-    if dd["sub_peak"]:
         return 2.0
+    if dd["sub_peak"]:
+        return 1.5
     return 1.0
 
 
@@ -153,14 +153,14 @@ def validate_open(
         mode = "recovery" if dd["recovery_mode"] else "sub-peak"
         return False, f"{mode} anti-churn: {inst} already opened {touches}x in 24h — pick a different symbol"
 
-    # Block re-opening symbols with recent realized losses.
+    # Block re-opening symbols with very recent realized losses.
     for entry in reversed(list(state.get("pnl_ledger", {}).get("entries") or [])[-20:]):
         if entry.get("instId") != inst:
             continue
         pnl = float(entry.get("realized_pnl") or 0)
         age = time.time() - float(entry.get("ts") or 0)
-        if pnl < -0.01 and age < SYMBOL_LOOKBACK_SEC:
-            return False, f"recent loss on {inst} (${pnl:.4f}) — no re-open for 24h"
+        if pnl < -0.10 and age < 6 * 60 * 60:
+            return False, f"recent loss on {inst} (${pnl:.4f}) — no re-open for 6h"
 
     now = time.time()
     recent = _recent_history(state, window_sec=open_cd)
