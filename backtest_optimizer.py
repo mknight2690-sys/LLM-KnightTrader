@@ -35,7 +35,7 @@ POPULATION_SIZE = 200
 ELITE_COUNT = 25
 MUTATION_RATE = 0.25
 FOLDS = 3
-OPTIMIZED_PARAMS_PATH = os.path.join(ROOT, "..", "data", "optimized_params.json")
+OPTIMIZED_PARAMS_PATH = os.path.join(ROOT, "data", "optimized_params.json")
 
 
 def fetch_candles(client: BlofinClient, inst_id: str) -> list[dict[str, float]]:
