@@ -1174,14 +1174,24 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 
-    from config import BLOFIN_BASE, BLOFIN_DEMO, TEST_ACCOUNT_EQUITY
+    from config import BLOFIN_BASE, BLOFIN_DEMO, BLOFIN_MARKET_BASE, PAPER_START_EQUITY, PAPER_TRADING, TEST_ACCOUNT_EQUITY
 
     log_event("system", f"{APP_NAME} started", MISSION_PROMPT[:200])
-    log_event(
-        "system",
-        "BloFin trading venue",
-        f"{'DEMO' if BLOFIN_DEMO else 'LIVE'} | base={BLOFIN_BASE} | risk_cap=${TEST_ACCOUNT_EQUITY:.2f}",
-    )
+    if PAPER_TRADING:
+        from blofin.paper_ledger import reset_paper_account
+
+        reset_paper_account(equity=PAPER_START_EQUITY)
+        log_event(
+            "system",
+            "Paper trading armed",
+            f"${PAPER_START_EQUITY:.2f} virtual equity | live market={BLOFIN_MARKET_BASE} | risk_cap=${TEST_ACCOUNT_EQUITY:.2f}",
+        )
+    else:
+        log_event(
+            "system",
+            "BloFin trading venue",
+            f"{'DEMO' if BLOFIN_DEMO else 'LIVE'} | base={BLOFIN_BASE} | risk_cap=${TEST_ACCOUNT_EQUITY:.2f}",
+        )
     if context.get("loaded"):
         log_event("system", "Optimized params loaded", json.dumps(context)[:1200])
     if context.get("error"):

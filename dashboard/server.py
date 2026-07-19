@@ -367,7 +367,7 @@ async def api_baseline_set(req: BaselineSetRequest) -> dict[str, Any]:
 
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
-    from config import BLOFIN_BASE, BLOFIN_DEMO, TEST_ACCOUNT_EQUITY
+    from config import BLOFIN_BASE, BLOFIN_DEMO, BLOFIN_MARKET_BASE, PAPER_START_EQUITY, PAPER_TRADING, TEST_ACCOUNT_EQUITY
 
     state = load_state()
     account = await asyncio.to_thread(read_account_cached)
@@ -376,8 +376,11 @@ async def api_status() -> dict[str, Any]:
         "chat_agent_name": CHAT_AGENT_NAME,
         "mission": MISSION_PROMPT,
         "target_equity": TARGET_EQUITY,
+        "paper_trading": bool(PAPER_TRADING),
+        "paper_start_equity": PAPER_START_EQUITY,
         "blofin_demo": bool(BLOFIN_DEMO),
         "blofin_base": BLOFIN_BASE,
+        "blofin_market_base": BLOFIN_MARKET_BASE,
         "test_account_equity": TEST_ACCOUNT_EQUITY,
         "account": account,
         "state": {

@@ -624,7 +624,12 @@ def _best_fallback_snapshot() -> dict[str, Any] | None:
 
 
 def read_account_cached() -> dict[str, Any]:
-    """Fast read for UI polling — never hits BloFin API."""
+    """Fast read for UI polling — never hits BloFin API (except paper ledger)."""
+    from config import PAPER_TRADING
+
+    if PAPER_TRADING:
+        return get_account_snapshot(force=True)
+
     if _disk_needs_bootstrap(_read_disk()):
         bootstrap_account_cache()
     snap = _best_fallback_snapshot()
@@ -677,6 +682,19 @@ def _disk_needs_bootstrap(disk: dict[str, Any] | None) -> bool:
 
 def get_account_snapshot(*, force: bool = False) -> dict[str, Any]:
     """Return account data from shared file cache; one process refreshes per interval."""
+    from config import PAPER_TRADING
+
+    if PAPER_TRADING:
+        from blofin.paper_ledger import apply_tpsl_triggers, snapshot
+
+        try:
+            apply_tpsl_triggers()
+        except Exception:
+            pass
+        snap = snapshot(force_marks=True)
+        _write_disk(snap)
+        return _decorate(snap, cached=False)
+
     disk0 = _read_disk()
     if not _is_good_snapshot(disk0) or _disk_needs_bootstrap(disk0):
         bootstrap_account_cache()

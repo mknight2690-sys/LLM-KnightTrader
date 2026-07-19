@@ -26,9 +26,9 @@ INSTRUMENTS_TTL_SEC = 3600.0
 
 def fetch_public_tickers(*, inst_type: str = "SWAP", timeout: float = 12.0) -> list[dict[str, Any]]:
     """Unsigned public market tickers — works during account API cooldown."""
-    from config import BLOFIN_BASE
+    from config import BLOFIN_MARKET_BASE
 
-    url = f"{BLOFIN_BASE}/api/v1/market/tickers?instType={urllib.parse.quote(inst_type)}"
+    url = f"{BLOFIN_MARKET_BASE}/api/v1/market/tickers?instType={urllib.parse.quote(inst_type)}"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

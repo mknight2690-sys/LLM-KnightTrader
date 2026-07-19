@@ -57,15 +57,34 @@ DEFAULT_CREDENTIALS_PATH = Path(
 )
 
 # Demo trading: set BLOFIN_DEMO=1 (or true/yes/on/demo). Explicit BLOFIN_API_BASE wins.
+# Paper trading: local $40 virtual ledger + LIVE market data (full universe). Wins over demo.
+PAPER_TRADING = _env_bool("PAPER_TRADING", default=False) or _env_bool(
+    "KNIGHTTRADER_PAPER_TRADING", default=False
+)
+_paper_eq = os.environ.get("PAPER_START_EQUITY") or os.environ.get("KNIGHTTRADER_PAPER_START_EQUITY")
+try:
+    PAPER_START_EQUITY = float(_paper_eq) if _paper_eq is not None else 40.0
+except (TypeError, ValueError):
+    PAPER_START_EQUITY = 40.0
+
 BLOFIN_DEMO = _env_bool("BLOFIN_DEMO", default=False)
 _api_base_env = os.environ.get("BLOFIN_API_BASE") or os.environ.get("BLOFIN_BASE_URL")
-if _api_base_env:
+if PAPER_TRADING:
+    # Always use live OpenAPI for the full instrument universe + real candles.
+    BLOFIN_BASE = BLOFIN_LIVE_BASE
+    BLOFIN_DEMO = False
+elif _api_base_env:
     BLOFIN_BASE = _api_base_env.strip().rstrip("/")
     BLOFIN_DEMO = "demo-trading" in BLOFIN_BASE.lower() or BLOFIN_DEMO
 elif BLOFIN_DEMO:
     BLOFIN_BASE = BLOFIN_DEMO_BASE
 else:
     BLOFIN_BASE = BLOFIN_LIVE_BASE
+
+# Public market data always prefers live OpenAPI (full universe).
+BLOFIN_MARKET_BASE = os.environ.get("BLOFIN_MARKET_BASE", BLOFIN_LIVE_BASE).strip().rstrip("/")
+if PAPER_TRADING:
+    BLOFIN_MARKET_BASE = BLOFIN_LIVE_BASE
 
 BLOFIN_BROKER_ID = os.environ.get("BLOFIN_BROKER_ID", "5388cb1f51cec2e3")
 

@@ -13,7 +13,7 @@ import urllib.request
 from typing import Any
 from uuid import uuid4
 
-from config import BLOFIN_BASE, BLOFIN_BROKER_ID
+from config import BLOFIN_BASE, BLOFIN_BROKER_ID, BLOFIN_MARKET_BASE, PAPER_TRADING
 from credentials import BlofinCredentials, load_blofin_credentials
 from blofin.account_cache import get_account_snapshot
 from blofin.market_cache import get_cached_candles, get_cached_tickers, set_cached_candles, set_cached_tickers
@@ -60,6 +60,9 @@ class BlofinClient:
 
     def ensure_net_position_mode(self) -> str:
         """BloFin account uses net (one-way) mode — orders need positionSide=net."""
+        if PAPER_TRADING:
+            self._position_mode = "net_mode"
+            return self._position_mode
         if self._position_mode in ("net_mode", "net"):
             return self._position_mode
         from blofin.account_cache import is_rate_limited
@@ -110,7 +113,9 @@ class BlofinClient:
         query = "?" + urllib.parse.urlencode(params) if params else ""
         sign_path = path + query
         body_str = json.dumps(body, separators=(",", ":")) if body else ""
-        url = f"{BLOFIN_BASE}{sign_path}"
+        # Public market routes always prefer live OpenAPI (full universe).
+        base = BLOFIN_MARKET_BASE if path.startswith("/api/v1/market/") else BLOFIN_BASE
+        url = f"{base}{sign_path}"
         ts, nonce, signature = self._sign(method, sign_path, body_str)
         headers = dict(DEFAULT_HEADERS)
         headers.update(
@@ -145,9 +150,21 @@ class BlofinClient:
             return data
 
     def get_balance(self) -> dict[str, Any]:
+        if PAPER_TRADING:
+            from blofin.paper_ledger import snapshot
+
+            return snapshot().get("balance_raw") or {"code": "0", "data": {}}
         return self.request("GET", "/api/v1/account/balance", params={"accountType": "futures"})
 
     def get_positions(self, inst_id: str | None = None) -> dict[str, Any]:
+        if PAPER_TRADING:
+            from blofin.paper_ledger import snapshot
+
+            raw = snapshot().get("positions_raw") or {"code": "0", "data": []}
+            if inst_id:
+                rows = [r for r in (raw.get("data") or []) if r.get("instId") == inst_id]
+                return {"code": "0", "msg": "paper", "data": rows}
+            return raw
         params: dict[str, str] = {}
         if inst_id:
             params["instId"] = inst_id
@@ -226,6 +243,15 @@ class BlofinClient:
         reduce_only: bool = False,
         margin_mode: str = "cross",
     ) -> dict[str, Any]:
+        if PAPER_TRADING:
+            from blofin.paper_ledger import place_market_order as paper_open
+
+            return paper_open(
+                inst_id=inst_id,
+                side=side,
+                size=size,
+                reduce_only=reduce_only,
+            )
         self.ensure_net_position_mode()
         pos_side = position_side or self.position_side_for_order(side)
         body = {
@@ -249,6 +275,10 @@ class BlofinClient:
         tp: float,
         sl: float,
     ) -> dict[str, Any]:
+        if PAPER_TRADING:
+            from blofin.paper_ledger import attach_tpsl as paper_tpsl
+
+            return paper_tpsl(inst_id, size, tp, sl)
         # close_side is the side that will close the position.
         # positionSide must refer to the OPEN position side (buy→long, sell→short in hedge mode).
         open_side = "buy" if close_side == "sell" else "sell"
@@ -313,6 +343,10 @@ class BlofinClient:
 
         BloFin requires either tpslId or clientOrderId per row.
         """
+        if PAPER_TRADING:
+            from blofin.paper_ledger import cancel_tpsl as paper_cancel
+
+            return paper_cancel(inst_id)
         body: list[dict[str, Any]] = []
         if tpsl_ids:
             for tid in tpsl_ids:
@@ -332,6 +366,10 @@ class BlofinClient:
         margin_mode: str = "cross",
         position_side: str | None = None,
     ) -> dict[str, Any]:
+        if PAPER_TRADING:
+            from blofin.paper_ledger import set_leverage as paper_lev
+
+            return paper_lev(inst_id, leverage)
         pos_side = position_side or "net"
         body: dict[str, Any] = {
             "instId": inst_id,
