@@ -163,9 +163,10 @@ except (TypeError, ValueError):
 
 _MAX_POS_ENV = os.environ.get("KNIGHTTRADER_MAX_POSITIONS")
 try:
-    MAX_POSITIONS = int(_MAX_POS_ENV) if _MAX_POS_ENV is not None else 4
+    # 0 = unlimited (no hard position-count cap).
+    MAX_POSITIONS = int(_MAX_POS_ENV) if _MAX_POS_ENV is not None else 0
 except (TypeError, ValueError):
-    MAX_POSITIONS = 4
+    MAX_POSITIONS = 0
 _MAX_EXP_ENV = os.environ.get("KNIGHTTRADER_MAX_EXPOSURE_PCT")
 try:
     MAX_EXPOSURE_PCT = float(_MAX_EXP_ENV) if _MAX_EXP_ENV is not None else 0.45

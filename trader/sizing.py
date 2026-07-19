@@ -53,7 +53,8 @@ def margin_budget_for_setup(
 ) -> dict[str, Any]:
     """
     Size each open from conviction × sentiment × available margin × portfolio heat.
-    Hard caps: MAX_POSITIONS and TEST_ACCOUNT_EQUITY ($40-style risk envelope).
+    Hard caps: TEST_ACCOUNT_EQUITY ($40-style risk envelope).
+    Position count is unlimited when MAX_POSITIONS <= 0.
     """
     available = _risk_available(account)
     if open_count is None:
