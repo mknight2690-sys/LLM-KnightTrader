@@ -283,9 +283,8 @@ def place_market_order(
             realized = (fill_px - entry) * close_signed * ct
             notional = close_qty * fill_px * ct
             fee = notional * FEE_TAKER
-            # Free margin + realize PnL into cash (net of fee)
-            margin_free = (close_qty * entry * ct) / lev
-            state["cash"] = float(state.get("cash") or 0) + margin_free + realized - fee
+            # Cross-margin style: cash only moves by realized PnL and fees (margin is not a cash deduct).
+            state["cash"] = float(state.get("cash") or 0) + realized - fee
             new_size = cur - close_signed
             if abs(new_size) < 1e-12:
                 state["positions"].pop(inst_id, None)
