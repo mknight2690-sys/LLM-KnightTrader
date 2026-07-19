@@ -214,6 +214,12 @@ def apply_best_params(params: dict[str, Any]) -> None:
             MARGIN_USE_RATIO = float(params["MARGIN_USE_RATIO"])
         except (TypeError, ValueError):
             pass
+    elif "RISK_PER_TRADE" in params:
+        # Backtest RISK_PER_TRADE ≈ live margin pool fraction for $40-scale accounts.
+        try:
+            MARGIN_USE_RATIO = float(params["RISK_PER_TRADE"])
+        except (TypeError, ValueError):
+            pass
     harvest = params.get("HARVEST_NTP_PCT", params.get("BLOHUNTER_HARVEST_NTP_PCT"))
     if harvest is not None:
         try:

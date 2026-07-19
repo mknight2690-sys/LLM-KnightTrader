@@ -1198,8 +1198,17 @@ def main() -> None:
         learn_from_activity_tail(state, tail_lines=800)
     bootstrap_order_guard_from_trades(state)
     apply_best_params(best_params or {})
-    state.setdefault("best_params", best_params)
-    state.setdefault("optimized_params_context", context)
+    state["best_params"] = best_params or {}
+    state["optimized_params_context"] = context
+    if best_params:
+        log_event(
+            "system",
+            "Best-tested params applied",
+            f"strategy={best_params.get('STRATEGY')} margin={best_params.get('MARGIN_USE_RATIO') or best_params.get('RISK_PER_TRADE')} "
+            f"max_pos={best_params.get('MAX_POSITIONS')} exposure={best_params.get('MAX_EXPOSURE_PCT')} "
+            f"backtest_equity={context.get('final_equity')}",
+            {"best_params": best_params, "context": context},
+        )
     if state.get("peak_equity"):
         state["_last_lesson_peak"] = float(state.get("_last_lesson_peak") or state["peak_equity"])
     save_state(state)
