@@ -1,8 +1,15 @@
-"""Local paper trading ledger — virtual equity, live market marks."""
+"""Local paper trading ledger — virtual equity, live market marks.
+
+Persistence contract:
+- `data/paper_account.json` is the funded demo wallet.
+- Stack restarts NEVER wipe it (same as a live exchange balance).
+- Only `reset_paper_account(force=True)` or explicit operator reset rebuilds it.
+"""
 
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
 import uuid
@@ -15,8 +22,8 @@ LEDGER_PATH = DATA_DIR / "paper_account.json"
 _lock = threading.RLock()
 
 
-def _default_state() -> dict[str, Any]:
-    cash = float(PAPER_START_EQUITY)
+def _default_state(*, equity: float | None = None) -> dict[str, Any]:
+    cash = float(equity if equity is not None else PAPER_START_EQUITY)
     return {
         "cash": cash,
         "starting_equity": cash,
@@ -24,6 +31,8 @@ def _default_state() -> dict[str, Any]:
         "leverage": {},  # instId -> int
         "tpsl": {},  # instId -> {tp, sl, size}
         "fills": [],
+        "persist": True,
+        "seeded_at": time.time(),
         "updated_at": time.time(),
     }
 
@@ -31,6 +40,7 @@ def _default_state() -> dict[str, Any]:
 def _load() -> dict[str, Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not LEDGER_PATH.is_file():
+        # First-ever seed only — never treat restart as a reset.
         state = _default_state()
         _save(state)
         return state
@@ -42,8 +52,12 @@ def _load() -> dict[str, Any]:
         data.setdefault("leverage", {})
         data.setdefault("tpsl", {})
         data.setdefault("fills", [])
-        data.setdefault("cash", float(PAPER_START_EQUITY))
-        data.setdefault("starting_equity", float(PAPER_START_EQUITY))
+        data.setdefault("persist", True)
+        # Do NOT overwrite existing cash/starting_equity with PAPER_START_EQUITY.
+        if "cash" not in data or data.get("cash") is None:
+            data["cash"] = float(data.get("starting_equity") or PAPER_START_EQUITY)
+        if "starting_equity" not in data or data.get("starting_equity") is None:
+            data["starting_equity"] = float(data.get("cash") or PAPER_START_EQUITY)
         if isinstance(data.get("positions"), list):
             data["positions"] = {}
         if not isinstance(data.get("leverage"), dict):
@@ -52,24 +66,45 @@ def _load() -> dict[str, Any]:
             data["tpsl"] = {}
         return data
     except Exception:
+        # Corrupt file: quarantine and keep going from last known cash if possible.
+        try:
+            bak = LEDGER_PATH.with_suffix(f".corrupt.{int(time.time())}.bak")
+            shutil.copy2(LEDGER_PATH, bak)
+        except OSError:
+            pass
+        # Prefer not inventing a wipe — restore minimal cash from start equity only if file unreadable.
         state = _default_state()
+        state["recovered_from_corrupt"] = True
         _save(state)
         return state
 
 
 def _save(state: dict[str, Any]) -> None:
     state["updated_at"] = time.time()
+    state["persist"] = True
     tmp = LEDGER_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
     tmp.replace(LEDGER_PATH)
 
 
-def reset_paper_account(*, equity: float | None = None) -> dict[str, Any]:
+def ensure_paper_seeded(*, equity: float | None = None) -> dict[str, Any]:
+    """Create ledger once if missing; never wipe an existing wallet."""
+    with _lock:
+        if LEDGER_PATH.is_file():
+            return _load()
+        state = _default_state(equity=equity)
+        _save(state)
+        return state
+
+
+def reset_paper_account(*, equity: float | None = None, force: bool = True) -> dict[str, Any]:
+    """Explicit operator reset — only path that wipes demo wallet."""
+    if not force:
+        return ensure_paper_seeded(equity=equity)
     with _lock:
         start = float(equity if equity is not None else PAPER_START_EQUITY)
-        state = _default_state()
-        state["cash"] = start
-        state["starting_equity"] = start
+        state = _default_state(equity=start)
+        state["reset_at"] = time.time()
         _save(state)
         return state
 
