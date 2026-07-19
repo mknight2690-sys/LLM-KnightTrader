@@ -1178,13 +1178,16 @@ def main() -> None:
 
     log_event("system", f"{APP_NAME} started", MISSION_PROMPT[:200])
     if PAPER_TRADING:
-        from blofin.paper_ledger import reset_paper_account
+        from blofin.paper_ledger import LEDGER_PATH, reset_paper_account
 
-        reset_paper_account(equity=PAPER_START_EQUITY)
+        # Seed once like a funded demo wallet; do not wipe on every restart (live doesn't).
+        if not LEDGER_PATH.is_file():
+            reset_paper_account(equity=PAPER_START_EQUITY)
         log_event(
             "system",
-            "Paper trading armed",
-            f"${PAPER_START_EQUITY:.2f} virtual equity | live market={BLOFIN_MARKET_BASE} | risk_cap=${TEST_ACCOUNT_EQUITY:.2f}",
+            "Demo/paper venue (live-parity client path)",
+            f"${PAPER_START_EQUITY:.2f} virtual equity | live market={BLOFIN_MARKET_BASE} | "
+            f"fees+slippage on | risk_cap=${TEST_ACCOUNT_EQUITY:.2f}",
         )
     else:
         log_event(

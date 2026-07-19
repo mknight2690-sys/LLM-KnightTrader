@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from config import DATA_DIR, PAPER_START_EQUITY
+from config import DATA_DIR, FEE_TAKER, PAPER_START_EQUITY, SLIPPAGE
 
 LEDGER_PATH = DATA_DIR / "paper_account.json"
 _lock = threading.RLock()
@@ -260,6 +260,9 @@ def place_market_order(
         if mark <= 0:
             return {"code": "1", "msg": "no mark price", "data": []}
 
+        # Live-parity fill: adverse slippage + taker fee (same idea as backtests).
+        fill_px = mark * (1.0 + SLIPPAGE) if side.lower() == "buy" else mark * (1.0 - SLIPPAGE)
+
         signed = qty if side.lower() == "buy" else -qty
         pos = dict(state.get("positions", {}).get(inst_id) or {})
         cur = float(pos.get("size") or 0)
@@ -276,18 +279,20 @@ def place_market_order(
                 }
             close_qty = min(abs(signed), abs(cur))
             close_signed = close_qty if cur > 0 else -close_qty
-            entry = float(pos.get("entry") or mark)
-            realized = (mark - entry) * close_signed * ct
-            # Free margin + realize PnL into cash
+            entry = float(pos.get("entry") or fill_px)
+            realized = (fill_px - entry) * close_signed * ct
+            notional = close_qty * fill_px * ct
+            fee = notional * FEE_TAKER
+            # Free margin + realize PnL into cash (net of fee)
             margin_free = (close_qty * entry * ct) / lev
-            state["cash"] = float(state.get("cash") or 0) + margin_free + realized
+            state["cash"] = float(state.get("cash") or 0) + margin_free + realized - fee
             new_size = cur - close_signed
             if abs(new_size) < 1e-12:
                 state["positions"].pop(inst_id, None)
                 state.get("tpsl", {}).pop(inst_id, None)
             else:
                 pos["size"] = new_size
-                pos["mark"] = mark
+                pos["mark"] = fill_px
                 pos["contract_value"] = ct
                 pos["leverage"] = lev
                 state["positions"][inst_id] = pos
@@ -298,7 +303,8 @@ def place_market_order(
                     "instId": inst_id,
                     "side": side,
                     "size": close_qty,
-                    "price": mark,
+                    "price": fill_px,
+                    "fee": fee,
                     "realized": realized,
                     "orderId": oid,
                     "reduce": True,
@@ -313,33 +319,35 @@ def place_market_order(
             }
 
         # Open / add same direction
-        notional = qty * mark * ct
+        notional = qty * fill_px * ct
+        fee = notional * FEE_TAKER
         margin = notional / lev
         cash = float(state.get("cash") or 0)
-        # Approximate free cash = cash - existing margins (recompute quickly)
         locked = 0.0
         for i, p in (state.get("positions") or {}).items():
+            if not isinstance(p, dict):
+                continue
             il = float(state.get("leverage", {}).get(i) or p.get("leverage") or lev)
             locked += _margin_used(p, il)
         free = cash - locked
-        if margin > free + 1e-9:
+        if margin + fee > free + 1e-9:
             return {
                 "code": "1",
                 "msg": "All operations failed",
                 "data": [{"code": "103003", "msg": "Insufficient margin in account"}],
             }
 
+        state["cash"] = cash - fee
         if abs(cur) > 0 and (cur > 0) == (signed > 0):
-            # Average in
-            old_notional = abs(cur) * float(pos.get("entry") or mark) * ct
+            old_notional = abs(cur) * float(pos.get("entry") or fill_px) * ct
             new_notional = notional
             new_size = cur + signed
-            avg = (old_notional + new_notional) / (abs(new_size) * ct) if abs(new_size) > 0 else mark
+            avg = (old_notional + new_notional) / (abs(new_size) * ct) if abs(new_size) > 0 else fill_px
             pos.update(
                 {
                     "size": new_size,
                     "entry": avg,
-                    "mark": mark,
+                    "mark": fill_px,
                     "contract_value": ct,
                     "leverage": lev,
                 }
@@ -347,8 +355,8 @@ def place_market_order(
         else:
             pos = {
                 "size": signed,
-                "entry": mark,
-                "mark": mark,
+                "entry": fill_px,
+                "mark": fill_px,
                 "contract_value": ct,
                 "leverage": lev,
             }
@@ -361,7 +369,8 @@ def place_market_order(
                 "instId": inst_id,
                 "side": side,
                 "size": qty,
-                "price": mark,
+                "price": fill_px,
+                "fee": fee,
                 "margin": margin,
                 "orderId": oid,
                 "reduce": False,
@@ -432,3 +441,96 @@ def apply_tpsl_triggers() -> list[dict[str, Any]]:
                 )
                 results.append({"instId": inst, "response": resp, "mark": mark})
     return results
+
+
+def handle_request(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, str] | None = None,
+    body: dict[str, Any] | list[Any] | None = None,
+) -> dict[str, Any] | None:
+    """Mirror BloFin private REST inside the paper ledger.
+
+    Returns None when the path should hit the real/live HTTP transport (market data).
+    Agent/client call sites stay identical between demo and live.
+    """
+    params = params or {}
+    method_u = method.upper()
+    path_only = path.split("?", 1)[0]
+
+    # Market data always goes to live OpenAPI.
+    if path_only.startswith("/api/v1/market/"):
+        return None
+
+    if path_only == "/api/v1/account/balance" and method_u == "GET":
+        return snapshot().get("balance_raw") or {"code": "0", "data": {}}
+
+    if path_only in ("/api/v1/account/positions", "/api/v1/trade/positions") and method_u == "GET":
+        raw = snapshot().get("positions_raw") or {"code": "0", "data": []}
+        inst = params.get("instId")
+        if inst:
+            rows = [r for r in (raw.get("data") or []) if r.get("instId") == inst]
+            return {"code": "0", "msg": "success", "data": rows}
+        return raw
+
+    if path_only == "/api/v1/account/position-mode" and method_u == "GET":
+        return {"code": "0", "data": {"positionMode": "net_mode"}}
+
+    if path_only == "/api/v1/account/set-position-mode" and method_u == "POST":
+        return {"code": "0", "data": {"positionMode": "net_mode"}}
+
+    if path_only == "/api/v1/account/set-leverage" and method_u == "POST":
+        b = body if isinstance(body, dict) else {}
+        return set_leverage(str(b.get("instId") or ""), b.get("leverage") or 5)
+
+    if path_only == "/api/v1/trade/order" and method_u == "POST":
+        b = body if isinstance(body, dict) else {}
+        reduce = str(b.get("reduceOnly") or "false").lower() in ("true", "1", "yes")
+        return place_market_order(
+            inst_id=str(b.get("instId") or ""),
+            side=str(b.get("side") or "buy"),
+            size=b.get("size") or "0",
+            reduce_only=reduce,
+        )
+
+    if path_only == "/api/v1/trade/order-tpsl" and method_u == "POST":
+        b = body if isinstance(body, dict) else {}
+        return attach_tpsl(
+            str(b.get("instId") or ""),
+            str(b.get("size") or "0"),
+            float(b.get("tpTriggerPrice") or 0),
+            float(b.get("slTriggerPrice") or 0),
+        )
+
+    if path_only == "/api/v1/trade/cancel-tpsl" and method_u == "POST":
+        inst = None
+        if isinstance(body, list) and body:
+            inst = (body[0] or {}).get("instId")
+        elif isinstance(body, dict):
+            inst = body.get("instId")
+        return cancel_tpsl(str(inst) if inst else None)
+
+    if path_only == "/api/v1/trade/orders-tpsl-pending" and method_u == "GET":
+        state = _load()
+        rows = []
+        for inst, rules in (state.get("tpsl") or {}).items():
+            if params.get("instId") and params.get("instId") != inst:
+                continue
+            rows.append(
+                {
+                    "instId": inst,
+                    "tpslId": rules.get("tpslId"),
+                    "size": rules.get("size"),
+                    "tpTriggerPrice": rules.get("tp"),
+                    "slTriggerPrice": rules.get("sl"),
+                }
+            )
+        return {"code": "0", "msg": "success", "data": rows}
+
+    if path_only == "/api/v1/trade/order-tpsl-detail" and method_u == "GET":
+        return {"code": "0", "msg": "success", "data": {}}
+
+    # Unknown private route — no-op success so live-only endpoints don't crash demo.
+    return {"code": "0", "msg": "paper noop", "data": {}}
+

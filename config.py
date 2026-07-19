@@ -182,12 +182,16 @@ try:
 except (TypeError, ValueError):
     BREAKEVEN_SL_PCT = 0.008
 
+# Live-parity execution costs (same ballpark as backtest_optimizer).
+FEE_TAKER = float(os.environ.get("KNIGHTTRADER_FEE_TAKER", "0.0006"))
+SLIPPAGE = float(os.environ.get("KNIGHTTRADER_SLIPPAGE", "0.0005"))
+
 # Soft equity baseline for small-account risk (demo $40 test).
 _TEST_EQ_ENV = os.environ.get("KNIGHTTRADER_TEST_EQUITY")
 try:
-    TEST_ACCOUNT_EQUITY = float(_TEST_EQ_ENV) if _TEST_EQ_ENV is not None else 40.0
+    TEST_ACCOUNT_EQUITY = float(_TEST_EQ_ENV) if _TEST_EQ_ENV is not None else float(PAPER_START_EQUITY)
 except (TypeError, ValueError):
-    TEST_ACCOUNT_EQUITY = 40.0
+    TEST_ACCOUNT_EQUITY = float(PAPER_START_EQUITY)
 
 
 def apply_best_params(params: dict[str, Any]) -> None:
