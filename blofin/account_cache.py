@@ -501,14 +501,31 @@ def _position_rows_by_inst(snapshots: list[dict[str, Any]]) -> dict[str, dict[st
     return out
 
 
-def hydrate_from_trade_log() -> dict[str, Any] | None:
-    """Reconstruct open positions from successful trade events in activity log."""
+def _read_activity_tail_lines(max_lines: int = 8000, max_bytes: int = 8_000_000) -> list[str]:
+    """Read the end of activity.jsonl without loading the full (often huge) file."""
     log_path = ROOT / "data" / "activity.jsonl"
     if not log_path.is_file():
-        return None
+        return []
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        size = log_path.stat().st_size
+        with log_path.open("rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()  # drop partial first line
+            raw = f.read()
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if max_lines > 0 and len(lines) > max_lines:
+            return lines[-max_lines:]
+        return lines
     except OSError:
+        return []
+
+
+def hydrate_from_trade_log() -> dict[str, Any] | None:
+    """Reconstruct open positions from successful trade events in activity log."""
+    lines = _read_activity_tail_lines()
+    if not lines:
         return None
 
     ledger: dict[str, float] = {}
@@ -569,14 +586,10 @@ def hydrate_from_trade_log() -> dict[str, Any] | None:
 
 def hydrate_from_activity_log() -> dict[str, Any] | None:
     """Recover the newest live BloFin account snapshot from the activity log."""
-    log_path = ROOT / "data" / "activity.jsonl"
-    if not log_path.is_file():
+    lines = _read_activity_tail_lines(max_lines=5000)
+    if not lines:
         return None
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    for line in reversed(lines[-5000:]):
+    for line in reversed(lines):
         line = line.strip()
         if not line:
             continue
@@ -824,7 +837,19 @@ def note_rate_limit(retry_after: float = 90.0) -> None:
 
 
 def bootstrap_account_cache() -> None:
-    """Seed shared cache from the newest live API account event in the activity log."""
+    """Seed shared cache from paper ledger or newest live API account event."""
+    try:
+        from config import PAPER_TRADING
+
+        if PAPER_TRADING:
+            from blofin.paper_ledger import snapshot
+
+            snap = snapshot(force_marks=True)
+            if _is_good_snapshot(snap):
+                _write_disk(snap)
+                return
+    except Exception:
+        pass
     auth = hydrate_from_activity_log()
     if not auth:
         return

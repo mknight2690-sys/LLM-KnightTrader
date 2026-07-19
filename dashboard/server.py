@@ -63,7 +63,10 @@ async def _lifespan(app: FastAPI):
     subscribe(_on_activity)
     if get_recent(1):
         _last_tail_ts = float(get_recent(1)[-1].get("ts") or 0)
-    await asyncio.to_thread(_bootstrap_account_cache)
+    try:
+        await asyncio.to_thread(_bootstrap_account_cache)
+    except Exception as exc:
+        log_event("error", "Account cache bootstrap failed at startup", str(exc)[:240])
     try:
         await asyncio.to_thread(refresh_account_if_stale, force=True)
     except FileNotFoundError as exc:

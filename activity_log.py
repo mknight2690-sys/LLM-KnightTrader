@@ -93,7 +93,13 @@ def load_history(limit: int = 500) -> None:
     with _lock:
         rows: list[dict[str, Any]] = []
         try:
-            text = ACTIVITY_LOG.read_text(encoding="utf-8", errors="replace")
+            size = ACTIVITY_LOG.stat().st_size
+            max_bytes = 4_000_000
+            with ACTIVITY_LOG.open("rb") as f:
+                if size > max_bytes:
+                    f.seek(size - max_bytes)
+                    f.readline()
+                text = f.read().decode("utf-8", errors="replace")
         except Exception:
             return
         for line in text.splitlines():
@@ -115,7 +121,13 @@ def tail_new_events(since_ts: float = 0.0) -> list[dict[str, Any]]:
         return []
     new_rows: list[dict[str, Any]] = []
     try:
-        text = ACTIVITY_LOG.read_text(encoding="utf-8", errors="replace")
+        size = ACTIVITY_LOG.stat().st_size
+        max_bytes = 2_000_000
+        with ACTIVITY_LOG.open("rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()
+            text = f.read().decode("utf-8", errors="replace")
     except Exception:
         return []
     for line in text.splitlines():
