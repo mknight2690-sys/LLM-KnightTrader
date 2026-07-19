@@ -129,8 +129,130 @@ def _margin_used(pos: dict[str, Any], leverage: float) -> float:
     return (size * entry * ct) / lev
 
 
+def _maintenance_rate(leverage: float) -> float:
+    """Approx BloFin-style maintenance margin rate vs notional."""
+    lev = max(float(leverage or 1), 1.0)
+    # Higher leverage → higher relative MM floor; never below 0.4% notional.
+    return max(0.004, 0.5 / lev)
+
+
+def _liq_price(pos: dict[str, Any], leverage: float) -> float:
+    entry = float(pos.get("entry") or 0)
+    size = float(pos.get("size") or 0)
+    if entry <= 0 or abs(size) <= 0:
+        return 0.0
+    lev = max(float(leverage or 1), 1.0)
+    mm = _maintenance_rate(lev)
+    # Cross approx: bankrupt when loss ≈ IM - MM = notional*(1/lev - mm)
+    buffer = max(1.0 / lev - mm, 0.001)
+    if size > 0:
+        return max(entry * (1.0 - buffer), 0.0)
+    return entry * (1.0 + buffer)
+
+
+def _force_liquidate(state: dict[str, Any], inst: str, pos: dict[str, Any], mark: float, reason: str) -> dict[str, Any]:
+    """Force-close a paper position at mark (live liquidation analogue)."""
+    size = float(pos.get("size") or 0)
+    if abs(size) <= 0:
+        return {"code": "1", "msg": "no position"}
+    side = "sell" if size > 0 else "buy"
+    # Temporary unlock so place_market_order can re-enter (we're already under _lock in callers
+    # that hold it — place_market_order also takes _lock via RLock, so OK).
+    resp = place_market_order(
+        inst_id=inst,
+        side=side,
+        size=abs(size),
+        reduce_only=True,
+    )
+    state.setdefault("fills", [])
+    # Annotate last fill if present
+    if state["fills"]:
+        state["fills"][-1]["liquidation"] = True
+        state["fills"][-1]["liq_reason"] = reason
+        state["fills"][-1]["liq_mark"] = mark
+    state.setdefault("liquidations", []).append(
+        {
+            "ts": time.time(),
+            "instId": inst,
+            "side": side,
+            "size": abs(size),
+            "mark": mark,
+            "reason": reason,
+            "response": resp,
+        }
+    )
+    state["liquidations"] = state["liquidations"][-100:]
+    return resp
+
+
+def apply_liquidations() -> list[dict[str, Any]]:
+    """Liquidate paper positions that breach liq price or account maintenance margin."""
+    results: list[dict[str, Any]] = []
+    with _lock:
+        state = _load()
+        positions = state.get("positions") or {}
+        if not isinstance(positions, dict) or not positions:
+            return results
+
+        # Mark all first
+        marked: list[tuple[str, dict[str, Any], float, float, float, float]] = []
+        cash = float(state.get("cash") or 0)
+        upl_total = 0.0
+        mm_total = 0.0
+        for inst, pos in list(positions.items()):
+            if not isinstance(pos, dict):
+                continue
+            size = float(pos.get("size") or 0)
+            if abs(size) <= 0:
+                continue
+            mark = _mark_price(inst, float(pos.get("mark") or pos.get("entry") or 0))
+            if mark <= 0:
+                continue
+            lev = float(state.get("leverage", {}).get(inst) or pos.get("leverage") or 5)
+            upl = _position_upl(pos, mark)
+            ct = float(pos.get("contract_value") or 1.0)
+            notional = abs(size) * mark * ct
+            mm = notional * _maintenance_rate(lev)
+            liq = _liq_price(pos, lev)
+            pos["mark"] = mark
+            pos["upl"] = upl
+            pos["liq_price"] = liq
+            upl_total += upl
+            mm_total += mm
+            marked.append((inst, pos, mark, lev, upl, liq))
+
+        equity = cash + upl_total
+        # Account-level: if equity cannot cover maintenance margin, wipe book (cross liq).
+        if mm_total > 0 and equity <= mm_total:
+            for inst, pos, mark, lev, upl, liq in marked:
+                resp = _force_liquidate(state, inst, pos, mark, "account_maintenance_margin")
+                results.append({"instId": inst, "reason": "account_maintenance_margin", "mark": mark, "response": resp})
+            _save(state)
+            return results
+
+        # Per-position: mark crossed estimated liquidation price.
+        for inst, pos, mark, lev, upl, liq in marked:
+            size = float(pos.get("size") or 0)
+            hit = False
+            if size > 0 and liq > 0 and mark <= liq:
+                hit = True
+            elif size < 0 and liq > 0 and mark >= liq:
+                hit = True
+            if hit:
+                resp = _force_liquidate(state, inst, pos, mark, "liq_price_breached")
+                results.append({"instId": inst, "reason": "liq_price_breached", "mark": mark, "liq_price": liq, "response": resp})
+        if results:
+            _save(state)
+    return results
+
+
 def snapshot(*, force_marks: bool = True) -> dict[str, Any]:
     """Dashboard/trader-shaped account snapshot from the paper ledger."""
+    # Liquidations run before snapshot so demo mirrors live account state.
+    try:
+        apply_liquidations()
+    except Exception:
+        pass
     with _lock:
         state = _load()
         positions_map = state.get("positions") or {}
@@ -152,6 +274,7 @@ def snapshot(*, force_marks: bool = True) -> dict[str, Any]:
             upl = _position_upl(pos, mark)
             pos["upl"] = upl
             margin = _margin_used(pos, lev)
+            liq = _liq_price(pos, lev)
             upl_total += upl
             margin_total += margin
             positions_out.append(
@@ -165,14 +288,13 @@ def snapshot(*, force_marks: bool = True) -> dict[str, Any]:
                     "upl_ratio": (upl / margin) if margin > 0 else 0.0,
                     "initial_margin": margin,
                     "leverage": lev,
+                    "liq_price": liq,
                     "marginMode": "cross",
                     "notional": abs(size) * mark * float(pos.get("contract_value") or 1.0),
                 }
             )
         cash = float(state.get("cash") or 0)
         equity = cash + upl_total
-        available = max(0.0, cash - margin_total + min(0.0, upl_total))
-        # Simpler available: equity - margin locked
         available = max(0.0, equity - margin_total)
         raw_positions = {
             "code": "0",
@@ -185,6 +307,7 @@ def snapshot(*, force_marks: bool = True) -> dict[str, Any]:
                     "markPrice": str(p["mark"]),
                     "unrealizedPnl": str(p["upl"]),
                     "leverage": str(p["leverage"]),
+                    "liqPrice": str(p.get("liq_price") or 0),
                     "marginMode": "cross",
                     "positionSide": "net",
                 }
