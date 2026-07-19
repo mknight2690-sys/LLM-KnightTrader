@@ -38,6 +38,40 @@ def _recent_repair_incidents() -> list[dict[str, Any]]:
         return []
 
 
+def _blob(incidents: list[dict[str, Any]]) -> str:
+    parts = []
+    for e in incidents[-20:]:
+        parts.append(f"{e.get('title') or ''} {e.get('detail') or ''}")
+    return " ".join(parts).lower()
+
+
+def _ensure_pythonpath() -> bool:
+    """Guarantee project root is importable for this process and children."""
+    root = str(PROJECT_ROOT)
+    changed = False
+    if root not in sys.path:
+        sys.path.insert(0, root)
+        changed = True
+    cur = os.environ.get("PYTHONPATH", "")
+    parts = [p for p in cur.split(os.pathsep) if p]
+    if root not in parts:
+        os.environ["PYTHONPATH"] = os.pathsep.join([root] + parts)
+        changed = True
+    return changed
+
+
+def _heal_activity_log_read() -> bool:
+    """Smoke-read activity log with resilient decode; returns True if readable."""
+    try:
+        from activity_log import get_recent as _gr
+
+        _gr(5)
+        return True
+    except Exception as exc:
+        log_event("error", "Self-heal activity log read failed", str(exc)[:220])
+        return False
+
+
 def heal_once(*, max_actions: int = _REPAIR_LIMIT) -> dict[str, Any]:
     global _LAST_HEAL_TS
     now = time.time()
@@ -46,6 +80,7 @@ def heal_once(*, max_actions: int = _REPAIR_LIMIT) -> dict[str, Any]:
     _LAST_HEAL_TS = now
 
     incidents = _recent_repair_incidents()
+    blob = _blob(incidents)
     issues = []
     try:
         issues = diagnose_stack() or []
@@ -53,16 +88,48 @@ def heal_once(*, max_actions: int = _REPAIR_LIMIT) -> dict[str, Any]:
         log_event("error", "Self-heal diagnose failed", str(exc)[:220])
         return {"ok": False, "error": f"diagnose failed: {exc}"}
 
+    actions: list[str] = []
+    errors: list[str] = []
+
+    # Learned class: import path / ModuleNotFoundError trader
+    path_fixed = _ensure_pythonpath()
+    needs_import_heal = path_fixed or (
+        "no module named 'trader'" in blob or "no module named 'llm'" in blob
+    )
+    if needs_import_heal:
+        if path_fixed:
+            actions.append("ensure_pythonpath")
+        try:
+            result = reconcile_stack(allow_start_trader=True)
+            actions.append("reconcile_after_import_heal")
+            if not result.get("ok") and result.get("error"):
+                errors.append(str(result["error"])[:200])
+        except Exception as exc:
+            errors.append(f"import_heal:{exc}"[:200])
+
+    # Learned class: corrupt activity.jsonl UTF-8
+    if "unicodedecodeerror" in blob or "invalid start byte" in blob:
+        if _heal_activity_log_read():
+            actions.append("activity_log_resilient_read_ok")
+        else:
+            errors.append("activity_log_unreadable")
+
     actionable = []
     for issue in issues:
         if issue.get("auto") is False:
             continue
         actionable.append(issue)
 
-    if not actionable and not incidents:
+    if not actionable and not incidents and not actions:
         return {"ok": True, "skipped": True, "reason": "nothing_to_do"}
 
     repair = _run_repairs(actionable[-max_actions:], incidents[-max_actions:])
+    if actions:
+        repair.setdefault("actions", [])
+        repair["actions"] = list(dict.fromkeys(list(repair.get("actions") or []) + actions))
+    if errors:
+        repair.setdefault("errors", [])
+        repair["errors"] = list(repair.get("errors") or []) + errors
     repair.update({"issues": actionable, "incident_count": len(incidents)})
     return repair
 

@@ -48,6 +48,7 @@ from trader.order_guard import (
     bootstrap_order_guard_from_trades,
     execution_context,
     record_execution,
+    repair_open_decision,
     validate_open,
 )
 from trader.harvest import (
@@ -790,7 +791,8 @@ def _proactive_repairs(
     gaps = detect_harvest_gaps(positions, account.get("positions_raw"))
     llm_flag = decision_reports_anomaly(decision)
 
-    if not gaps and not llm_flag:
+    # Soft LLM chatter without harvest gaps must not escalate to repair LLM.
+    if not gaps:
         return []
 
     reasons = []
@@ -1075,21 +1077,8 @@ def run_cycle(client: BlofinClient, llm: LLMWrapper, state: dict[str, Any]) -> d
         append_research(state, f"Strategy: {decision['strategy_update']}")
         log_event("research", "Strategy update", decision["strategy_update"][:800])
 
-    if str(decision.get("action", "hold") or "hold").lower() == "open" and (
-        not decision.get("instId") or not decision.get("side")
-    ):
-        decision = {
-            "research": decision.get("research", ""),
-            "strategy_update": decision.get("strategy_update", ""),
-            "action": "hold",
-            "instId": None,
-            "side": None,
-            "size_contracts": None,
-            "tp_pct": decision.get("tp_pct"),
-            "sl_pct": decision.get("sl_pct"),
-            "confidence": decision.get("confidence", 0),
-            "reasoning": "malformed open guidance suppressed to avoid repeated guard spam",
-        }
+    if str(decision.get("action", "hold") or "hold").lower() == "open":
+        decision = repair_open_decision(decision, scan, state=state)
     decision = apply_open_guard(state, account, decision)
 
     log_event(

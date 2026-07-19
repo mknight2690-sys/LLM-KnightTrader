@@ -124,6 +124,16 @@ def decision_reports_anomaly(decision: dict[str, Any] | None) -> bool:
     if not decision:
         return False
     text = f"{decision.get('research', '')} {decision.get('reasoning', '')} {decision.get('strategy_update', '')}".lower()
+    # Suppress soft/self-referential "repair" chatter — it is not a harvest gap.
+    soft = (
+        "malformed open",
+        "hold if errors persist",
+        "fallback after llm",
+        "no high-conviction",
+        "rule-based",
+    )
+    if any(s in text for s in soft):
+        return False
     return any(keyword in text for keyword in ANOMALY_KEYWORDS)
 
 

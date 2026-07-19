@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -9,6 +10,133 @@ from activity_log import log_event
 from trader.learning import append_lesson
 from trader.pnl_tracker import drawdown_state, performance_summary
 from trader.sizing import ABSOLUTE_MIN_MARGIN, budget_for_decision, margin_budget_for_setup
+
+_INST_RE = re.compile(r"\b([A-Z0-9]{2,15}-USDT)\b", re.I)
+_SIDE_BUY_RE = re.compile(r"\b(buy|long|bullish)\b", re.I)
+_SIDE_SELL_RE = re.compile(r"\b(sell|short|bearish)\b", re.I)
+
+
+def _scan_inst_ids(scan: list[dict[str, Any]] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in scan or []:
+        inst = str(row.get("instId") or "").strip().upper()
+        if inst and inst not in seen:
+            seen.add(inst)
+            out.append(inst)
+    return out
+
+
+def _complete_inst_id(raw: str, scan: list[dict[str, Any]] | None, blob: str) -> str | None:
+    """Resolve truncated or partial instId using scan + research text."""
+    raw_u = (raw or "").strip().upper()
+    ids = _scan_inst_ids(scan)
+    if raw_u in ids:
+        return raw_u
+    if raw_u and "-" in raw_u and raw_u.endswith("USDT"):
+        return raw_u
+    # Exact mention in research/reasoning takes priority.
+    for m in _INST_RE.finditer(blob or ""):
+        cand = m.group(1).upper()
+        if not ids or cand in ids:
+            return cand
+    if not raw_u or not ids:
+        return None
+    # Unique prefix among live scan (e.g. BI → BILL-USDT).
+    matches = [i for i in ids if i.startswith(raw_u) or i.split("-", 1)[0].startswith(raw_u)]
+    if len(matches) == 1:
+        return matches[0]
+    # Prefer affordable/high-score row when multiple prefix matches.
+    if matches and scan:
+        ranked = sorted(
+            (r for r in scan if str(r.get("instId") or "").upper() in matches),
+            key=lambda r: abs(float(r.get("score") or 0)),
+            reverse=True,
+        )
+        if ranked:
+            return str(ranked[0].get("instId") or "").upper()
+    return None
+
+
+def _infer_side(raw_side: Any, blob: str, scan_row: dict[str, Any] | None) -> str | None:
+    side = str(raw_side or "").strip().lower()
+    if side in ("buy", "sell"):
+        return side
+    if scan_row:
+        s = str(scan_row.get("side") or "").strip().lower()
+        if s in ("buy", "sell"):
+            return s
+    buy = bool(_SIDE_BUY_RE.search(blob or ""))
+    sell = bool(_SIDE_SELL_RE.search(blob or ""))
+    if buy and not sell:
+        return "buy"
+    if sell and not buy:
+        return "sell"
+    return None
+
+
+def repair_open_decision(
+    decision: dict[str, Any],
+    scan: list[dict[str, Any]] | None,
+    *,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Auto-complete truncated instId / missing side from scan + research.
+    Unrecoverable opens become hold (with a lesson), not silent spam.
+    """
+    action = str(decision.get("action") or "hold").lower()
+    if action != "open":
+        return decision
+
+    blob = " ".join(
+        str(decision.get(k) or "")
+        for k in ("research", "reasoning", "strategy_update", "instId", "side")
+    )
+    fixed = dict(decision)
+    raw_inst = str(fixed.get("instId") or "").strip()
+    completed = _complete_inst_id(raw_inst, scan, blob)
+    if completed:
+        fixed["instId"] = completed
+
+    scan_row = next(
+        (r for r in (scan or []) if str(r.get("instId") or "").upper() == str(fixed.get("instId") or "").upper()),
+        None,
+    )
+    side = _infer_side(fixed.get("side"), blob, scan_row)
+    if side:
+        fixed["side"] = side
+
+    inst_ok = bool(fixed.get("instId")) and "-" in str(fixed.get("instId"))
+    side_ok = str(fixed.get("side") or "").lower() in ("buy", "sell")
+    if inst_ok and side_ok:
+        if completed and completed != raw_inst.upper():
+            note = f"Completed truncated instId {raw_inst!r} → {completed}"
+            log_event("trade", "Open decision repaired", note, {"from": raw_inst, "to": completed, "side": side})
+            if state is not None:
+                append_lesson(state, category="open", lesson=note, source="open_repair")
+        return fixed
+
+    held = dict(fixed)
+    held["action"] = "hold"
+    held["_malformed_held"] = True
+    held["reasoning"] = (
+        f"malformed open unrepaired (instId={fixed.get('instId')!r} side={fixed.get('side')!r}) — held"
+    )
+    log_event(
+        "trade",
+        "Malformed open held",
+        held["reasoning"],
+        {"instId": fixed.get("instId"), "side": fixed.get("side")},
+    )
+    if state is not None:
+        append_lesson(
+            state,
+            category="open",
+            lesson="Emit full COIN-USDT instId and buy|sell; stack auto-completes truncations from scan when unique.",
+            source="open_repair",
+        )
+    return held
 
 # Base cooldowns (seconds) — scaled up in sub-peak / recovery mode.
 OPEN_SAME_INST_COOLDOWN_SEC = 10 * 60

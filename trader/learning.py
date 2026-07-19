@@ -26,6 +26,10 @@ _ERROR_LESSONS: list[tuple[re.Pattern[str], str, str]] = [
     (re.compile(r"Open failed|open_failed", re.I), "open", "Confirm affordable setup (est_margin) before open; redirect if too expensive."),
     (re.compile(r"phantom|hydrated|from_trades", re.I), "account", "Trust live API positions_raw only — ignore trade-log phantom positions."),
     (re.compile(r"churn|repeat open|recovery mode", re.I), "churn", "Sub-peak equity: do not re-trade same symbol — pick a new instId or hold."),
+    (re.compile(r"malformed open|missing instId|truncated inst", re.I), "open", "Always emit full instId (e.g. BILL-USDT) and side buy|sell; stack will auto-complete truncations from scan when possible."),
+    (re.compile(r"UnicodeDecodeError|invalid start byte|utf-8", re.I), "log", "Activity log must be read as utf-8 with errors=replace / tail-only — never full strict decode of activity.jsonl."),
+    (re.compile(r"ModuleNotFoundError: No module named 'trader'|No module named 'llm'", re.I), "env", "Child processes need PYTHONPATH=project root; restart with stack_launcher env, do not spin repair LLM."),
+    (re.compile(r"proactive_anomaly|Hold if errors persist after auto refresh", re.I), "repair", "Skip proactive_anomaly when no position/harvest gaps; refresh only, resume trading."),
 ]
 
 

@@ -910,6 +910,16 @@ def gather_novel_incidents() -> list[dict[str, Any]]:
 def _infer_repair_phase_from_error(err: str, title: str) -> str:
     e = (err or "").lower()
     t = (title or "").lower()
+    soft = (
+        "malformed open",
+        "hold if errors persist",
+        "fallback after",
+        "no high-conviction",
+        "rule-based",
+        "no module named 'trader'",
+    )
+    if any(s in e or s in t for s in soft):
+        return "cycle_proactive"
     if any(k in e for k in ("tpsl", "tp/sl", "tp/sl", "tp ", "sl ", "tpsl_failed")):
         return "tpsl_failed"
     if "close" in e and ("fail" in e or "reject" in e):
@@ -920,7 +930,7 @@ def _infer_repair_phase_from_error(err: str, title: str) -> str:
         return "open_failed"
     if "cycle_crash" in e or "crash" in e or "exception" in e:
         return "cycle_crash"
-    if any(k in e for k in ("proactive", "stale", "anomaly", "mismatch", "cooldown")):
+    if any(k in e for k in ("proactive", "stale", "anomaly", "mismatch")) and "harvest" in e:
         return "proactive_anomaly"
     # Default: let repair.py decide based on error codes (102089, etc.).
     return "unknown_incident"
@@ -1151,36 +1161,50 @@ def check_dashboard_sections_and_repair(
 
     # Research notes: if agent explicitly recorded an error/failure note.
     research = list(s.get("research_notes") or [])
+    soft_research = (
+        "malformed open",
+        "fallback after",
+        "hold if errors",
+        "no high-conviction",
+        "rule-based",
+        "completed truncated",
+    )
     for n in research[-30:]:
         if not isinstance(n, dict):
             continue
         note = str(n.get("note") or "")
-        if any(k in note.lower() for k in ("error", "fallback", "unsafe", "failed", "rejected")):
+        low = note.lower()
+        if any(s in low for s in soft_research):
+            continue
+        if any(k in low for k in ("error", "failed", "rejected", "exception", "traceback")):
             fp = f"research:{int(float(n.get('ts') or time.time()))}:{note[:40]}"
             if _cooldown(fp):
                 continue
             seen[fp] = time.time()
             incidents.append(
                 {
-                    "phase": "proactive_anomaly",
+                    "phase": "cycle_proactive",
                     "title": "dashboard research flagged failure",
                     "error": note[:900],
                 }
             )
             break
 
-    # Last decision: invalid response / fallback after error
+    # Last decision: only hard failures — not soft fallback/hold chatter.
     decision = s.get("last_decision")
     if isinstance(decision, dict):
         reasoning = str(decision.get("reasoning") or "")
-        blob = json.dumps(decision, default=str)[:900]
-        if any(k in reasoning.lower() for k in ("fallback", "invalid", "unsafe", "rate limited", "error")):
+        low = reasoning.lower()
+        hard = any(k in low for k in ("exception", "traceback", "rate limited", "unsafe", "json parse"))
+        soft = any(k in low for k in ("fallback", "malformed", "hold", "no decision", "rule-based"))
+        if hard and not soft:
+            blob = json.dumps(decision, default=str)[:900]
             fp = f"decision:{int(time.time())}:{blob[:40]}"
             if not _cooldown(fp):
                 seen[fp] = time.time()
                 incidents.append(
                     {
-                        "phase": "proactive_anomaly",
+                        "phase": "cycle_proactive",
                         "title": "dashboard last decision indicates failure",
                         "error": reasoning[:900] or blob,
                     }

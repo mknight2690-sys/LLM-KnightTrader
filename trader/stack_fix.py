@@ -21,6 +21,8 @@ PROCESS / LAUNCHER
 - Daily user control: desktop Start LLM KnightTrader / Stop LLM KnightTrader ONLY
 - Never use python -m trader.agent or python -m dashboard.server for daily ops
 - Full cold restart: python scripts/stack_launcher.py start
+- ModuleNotFoundError: No module named 'trader'/'llm': child lacks PYTHONPATH=project root —
+  restart via stack_launcher / stack_control (they set PYTHONPATH); do NOT spin repair LLM
 
 CREDENTIALS
 - credentials_missing: ask user for BloFin keys in chat or file path; write credentials/blofin.txt + .env
@@ -31,11 +33,16 @@ ACCOUNT / CACHE
 - account_rate_limited: wait (backoff), then refresh_account — do not hammer API
 - account_cache_stale: refresh_account
 - equity $0 but trades exist: bootstrap_account_cache
+- UnicodeDecodeError on activity.jsonl: always read binary tail + utf-8 errors=replace (never full strict decode)
 
 TRADING
 - Position mode 102089: ensure_net_mode then retry
 - Margin 103003: raise_leverage_retry_open or redirect_open
 - LLM failures: wait_llm_cooldown, hold — do not force trades
+- Malformed open (truncated instId e.g. BI, missing side): repair_open_decision completes from
+  live scan / research text in-cycle; only unrecoverable opens become hold
+- proactive_anomaly WITHOUT harvest gaps: refresh_account only — never repair-LLM loop on
+  fallback/hold chatter ("Hold if errors persist", "malformed open", "rule-based")
 
 WINDOWS
 - Stale trader.lock / trader.pid: stop stack (stack_launcher.py stop) clears locks

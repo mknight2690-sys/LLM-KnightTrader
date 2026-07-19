@@ -27,6 +27,14 @@ _REPAIR_NOISE_MARKERS = (
     "stream guardian",
     "proactive repair",
     "watchdog repaired",
+    "malformed open",
+    "hold if errors persist",
+    "fallback after llm",
+    "fallback — no decision",
+    "no high-conviction",
+    "rule-based",
+    "module not found",
+    "no module named 'trader'",
 )
 # Known maintenance — deterministic script is enough; do not burn repair LLM.
 _KNOWN_MAINTENANCE_MARKERS = (
@@ -48,7 +56,7 @@ _KNOWN_MAINTENANCE_MARKERS = (
 _LLM_PRIORITY_PHASES = frozenset(
     {
         "cycle_crash",
-        "proactive_anomaly",
+        # proactive_anomaly only escalates when real harvest gaps exist (see _should_consult).
         "open_failed",
         "open_rejected",
         "close_failed",
@@ -387,6 +395,13 @@ def _should_consult_repair_llm(
     err = str(incident.get("error") or incident.get("detail") or "").lower()
     seen = _incident_seen_before(state, incident)
     has_det_plan = _deterministic_repair_plan(incident) is not None
+
+    # Soft proactive flags with no harvest gaps — refresh is enough; never burn repair LLM.
+    if phase == "proactive_anomaly":
+        gaps = incident.get("gaps") or []
+        real_gaps = [g for g in gaps if isinstance(g, dict) and g.get("instId")]
+        if not real_gaps:
+            return False
 
     # High-priority incidents: consult repair LLM once per fingerprint when script did not recover.
     if phase in _LLM_PRIORITY_PHASES:
@@ -950,7 +965,13 @@ def _deterministic_repair_plan(incident: dict[str, Any]) -> dict[str, Any] | Non
         gaps = incident.get("gaps") or []
         real_gaps = [g for g in gaps if isinstance(g, dict) and g.get("instId")]
         if not real_gaps:
-            return None
+            # Soft / chatter-only — refresh cache and resume trading; do not escalate.
+            return {
+                "diagnosis": "Proactive anomaly without harvest gaps — refresh only",
+                "actions": [{"type": "refresh_account", "params": {}}],
+                "retry_original": False,
+                "strategy_note": "No position gaps; skip repair LLM",
+            }
         actions: list[dict[str, Any]] = [
             {"type": "refresh_account", "params": {}},
         ]
