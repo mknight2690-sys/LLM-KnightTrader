@@ -6,8 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from config import LEVERAGE_LADDER, MARGIN_USE_RATIO, TRADE_MAX_LEVERAGE
-
+from config import LEVERAGE_LADDER, MAX_EXPOSURE_PCT, TRADE_MAX_LEVERAGE
 
 @dataclass
 class OpenPlan:
@@ -51,12 +50,6 @@ def _max_leverage_for_inst(inst: dict[str, Any]) -> int:
 
 
 def _responsible_cap(margin_budget: float, account: dict[str, Any] | None) -> int:
-    """Cap leverage based on how large this position's margin slice is vs equity.
-
-    Smaller allocations can run higher leverage; larger allocations stay conservative.
-    The cap is a soft default — plan_open may exceed it when required to afford the
-    instrument's minimum contract margin.
-    """
     if not account:
         return TRADE_MAX_LEVERAGE
     equity = float(account.get("equity") or account.get("available") or 0)
@@ -84,6 +77,41 @@ def _leverage_steps(inst: dict[str, Any], cap: int | None = None) -> list[int]:
     return sorted(set(steps), reverse=True)
 
 
+def _open_count(account: dict[str, Any]) -> int:
+    n = 0
+    for pos in account.get("positions") or []:
+        size = abs(float(pos.get("size") or pos.get("positions") or 0))
+        if size > 0:
+            n += 1
+    return n
+
+
+def _passes_exposure_guard(plan: OpenPlan, account: dict[str, Any]) -> bool:
+    if float(MAX_EXPOSURE_PCT) <= 0:
+        return True
+    equity = float(account.get("equity") or 0)
+    if equity <= 0:
+        return False
+    used = 0.0
+    for pos in account.get("positions") or []:
+        try:
+            used += abs(float(pos.get("notional") or 0))
+        except (TypeError, ValueError):
+            continue
+    if used + plan.notional > MAX_EXPOSURE_PCT * equity:
+        return False
+    return True
+
+
+def _small_account_trade_cap(account: dict[str, Any]) -> float:
+    equity = float(account.get("equity") or account.get("available") or 0)
+    if equity <= 0:
+        return 0.0
+    if equity < 20.0:
+        return max(0.05, 0.125 * equity)
+    return float(equity)
+
+
 def plan_open(
     *,
     inst_id: str,
@@ -108,15 +136,12 @@ def plan_open(
     all_steps = _leverage_steps(inst, inst_cap)
 
     chosen_lev: int | None = None
-    # Prefer leverage up to the responsible soft cap.
     for lev in all_steps:
         if lev > soft_cap:
             continue
         if margin_for(min_size, price, ct_val, lev) <= budget:
             chosen_lev = lev
             break
-    # If the min contract margin cannot be met within the soft cap, raise leverage
-    # just enough to afford the position (still capped by instrument + TRADE_MAX_LEVERAGE).
     if chosen_lev is None:
         for lev in all_steps:
             if lev <= soft_cap:
@@ -128,19 +153,19 @@ def plan_open(
     if chosen_lev is None:
         return None
 
-    # Scale contracts up to use budget (conviction/sentiment-sized notional).
+    trade_cap = _small_account_trade_cap(account or {})
     step = min_size
     while True:
         next_size = contracts + step
         req = margin_for(next_size, price, ct_val, chosen_lev)
-        if req <= budget:
+        if req <= budget and req <= trade_cap:
             contracts = next_size
         else:
             break
 
     chosen_margin = margin_for(contracts, price, ct_val, chosen_lev)
     notional = contract_notional(contracts, price, ct_val)
-    return OpenPlan(
+    plan = OpenPlan(
         inst_id=inst_id,
         side=side,
         contracts=contracts,
@@ -151,6 +176,9 @@ def plan_open(
         contract_value=ct_val,
         min_size=min_size,
     )
+    if not _passes_exposure_guard(plan, account or {}):
+        return None
+    return plan
 
 
 def annotate_scan_row(row: dict[str, Any], margin_budget: float, account: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -185,7 +213,6 @@ def affordable_setups(
     *,
     budget_fn=None,
 ) -> list[dict[str, Any]]:
-    """Each row sized independently from its scan score + inferred conviction."""
     from trader.sizing import budget_for_scan_row
 
     fn = budget_fn or budget_for_scan_row

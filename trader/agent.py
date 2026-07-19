@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from activity_log import log_event, get_recent, load_history
 from blofin.client import BlofinClient
-from config import APP_NAME, ACCOUNT_REFRESH_SEC, MISSION_PROMPT, TARGET_EQUITY, TRADE_MAX_LEVERAGE, TRADE_MODE, TRADER_LOOP_SEC, OPEN_CONFIDENCE_FLOOR, apply_best_params
+from config import APP_NAME, ACCOUNT_REFRESH_SEC, MISSION_PROMPT, TARGET_EQUITY, TRADE_MAX_LEVERAGE, TRADE_MODE, TRADER_LOOP_SEC, OPEN_CONFIDENCE_FLOOR, FALLBACK_OPEN_CONFIDENCE_FLOOR, apply_best_params
 from llm.wrapper import LLMWrapper
 from trader.prompts import DEFAULT_USER_DIRECTIVES, TRADER_SYSTEM
 from trader.blohunter_knowledge import load_blohunter_tactics
@@ -888,10 +888,10 @@ def _fallback_decision(
             "action": "open",
             "instId": best["instId"],
             "side": best["side"],
-            "size_contracts": None,
+            "size_contracts": 1,
             "tp_pct": 2.0,
             "sl_pct": 1.0,
-            "confidence": 55,
+            "confidence": float(FALLBACK_OPEN_CONFIDENCE_FLOOR),
             "reasoning": f"Rule-based {'short' if best.get('side') == 'sell' else 'long'} momentum fallback",
         }
         ok, _ = validate_open(state, account, candidate)
@@ -1174,7 +1174,14 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 
+    from config import BLOFIN_BASE, BLOFIN_DEMO, TEST_ACCOUNT_EQUITY
+
     log_event("system", f"{APP_NAME} started", MISSION_PROMPT[:200])
+    log_event(
+        "system",
+        "BloFin trading venue",
+        f"{'DEMO' if BLOFIN_DEMO else 'LIVE'} | base={BLOFIN_BASE} | risk_cap=${TEST_ACCOUNT_EQUITY:.2f}",
+    )
     if context.get("loaded"):
         log_event("system", "Optimized params loaded", json.dumps(context)[:1200])
     if context.get("error"):

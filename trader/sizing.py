@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from config import MARGIN_USE_RATIO
+from config import MARGIN_USE_RATIO, MAX_POSITIONS, TEST_ACCOUNT_EQUITY
 
 # Smallest margin slice we'll attempt an open with (exchange min varies by inst).
 ABSOLUTE_MIN_MARGIN = 0.05
@@ -17,6 +17,15 @@ def _open_count(account: dict[str, Any]) -> int:
         if size > 0:
             n += 1
     return n
+
+
+def _risk_available(account: dict[str, Any]) -> float:
+    """Cap sizing to the $40-style test equity even if demo wallet is larger."""
+    available = float(account.get("available") or 0)
+    equity = float(account.get("equity") or available)
+    risk_equity = min(equity, float(TEST_ACCOUNT_EQUITY or equity or 0)) if TEST_ACCOUNT_EQUITY else equity
+    # Never size off more cash than is actually free.
+    return max(0.0, min(available, risk_equity))
 
 
 def sentiment_strength(score: float) -> float:
@@ -32,7 +41,7 @@ def conviction_factor(confidence: float, *, default: float = 65.0) -> float:
 
 def portfolio_heat_factor(open_count: int) -> float:
     """Soft dilution as book grows — not a hard position cap."""
-    return 1.0 / (1.0 + 0.12 * max(0, open_count))
+    return 1.0 / (1.0 + 0.25 * max(0, open_count))
 
 
 def margin_budget_for_setup(
@@ -44,11 +53,23 @@ def margin_budget_for_setup(
 ) -> dict[str, Any]:
     """
     Size each open from conviction × sentiment × available margin × portfolio heat.
-    No configured max position count — only margin math limits the book.
+    Hard caps: MAX_POSITIONS and TEST_ACCOUNT_EQUITY ($40-style risk envelope).
     """
-    available = float(account.get("available") or 0)
+    available = _risk_available(account)
     if open_count is None:
         open_count = _open_count(account)
+    if MAX_POSITIONS > 0 and open_count >= MAX_POSITIONS:
+        return {
+            "margin_budget": 0.0,
+            "available_margin": round(available, 4),
+            "deployable_pool": 0.0,
+            "conviction_factor": 0.0,
+            "sentiment_factor": 0.0,
+            "portfolio_heat": 0.0,
+            "combined_weight": 0.0,
+            "open_position_count": open_count,
+            "blocked": "max_positions",
+        }
 
     pool = available * MARGIN_USE_RATIO
     sent = sentiment_strength(score)
@@ -59,9 +80,11 @@ def margin_budget_for_setup(
     weight = conv * (0.45 + 0.55 * sent)
     budget = pool * weight * heat
 
-    # Per-trade ceiling scales with conviction (15%–50% of deployable pool).
-    cap = pool * (0.15 + 0.35 * conv)
-    budget = min(budget, cap)
+    # Per-trade ceiling: max 12%–25% of deployable pool (was up to 50%).
+    cap = pool * (0.12 + 0.13 * conv)
+    # Absolute small-account ceiling: never more than 12.5% of the $40 risk envelope.
+    abs_cap = max(0.05, 0.125 * float(TEST_ACCOUNT_EQUITY or available or 40.0))
+    budget = min(budget, cap, abs_cap)
 
     return {
         "margin_budget": round(max(0.0, budget), 4),
@@ -72,6 +95,7 @@ def margin_budget_for_setup(
         "portfolio_heat": round(heat, 3),
         "combined_weight": round(weight, 3),
         "open_position_count": open_count,
+        "risk_equity_cap": float(TEST_ACCOUNT_EQUITY or 0),
     }
 
 

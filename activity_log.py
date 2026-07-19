@@ -92,7 +92,11 @@ def load_history(limit: int = 500) -> None:
         return
     with _lock:
         rows: list[dict[str, Any]] = []
-        for line in ACTIVITY_LOG.read_text(encoding="utf-8").splitlines():
+        try:
+            text = ACTIVITY_LOG.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return
+        for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -110,7 +114,11 @@ def tail_new_events(since_ts: float = 0.0) -> list[dict[str, Any]]:
     if not ACTIVITY_LOG.is_file():
         return []
     new_rows: list[dict[str, Any]] = []
-    for line in ACTIVITY_LOG.read_text(encoding="utf-8").splitlines():
+    try:
+        text = ACTIVITY_LOG.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -118,7 +126,11 @@ def tail_new_events(since_ts: float = 0.0) -> list[dict[str, Any]]:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if float(row.get("ts") or 0) > since_ts:
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts > since_ts:
             new_rows.append(row)
     if not new_rows:
         return []
