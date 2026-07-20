@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -42,11 +43,14 @@ def _is_trader_process_cmd(cmd: str) -> bool:
     if any(marker in cmd for marker in ("stack_control", "stack_launcher", "stack_status", "_trader_pids")):
         return False
     compact = " ".join(cmd.split())
-    if "-m trader.agent" in compact:
+    # Exact module trader.agent — NOT trader.agents.* swarm modules.
+    if re.search(r"(?:^|\s)-m trader\.agent(?:\s|$)", compact):
         return True
     if "trader\\agent.py" in compact or "trader/agent.py" in compact:
         return True
-    return "from trader.agent import main; main()" in compact
+    return "from trader.agent import main; main()" in compact or (
+        "from trader.agent import main" in compact and "main()" in compact
+    )
 
 
 def _trader_pids(exclude: int | None = None) -> list[int]:

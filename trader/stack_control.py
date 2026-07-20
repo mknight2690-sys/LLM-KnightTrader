@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -20,9 +21,10 @@ def _is_trader_process_cmd(cmd: str) -> bool:
     """
     Local fallback for identifying trader.agent processes from a command line.
     Keeps stack_control robust even if health.py internals change.
+    Exact module trader.agent only — never trader.agents.* swarm modules.
     """
     compact = " ".join((cmd or "").split())
-    if "-m trader.agent" in compact:
+    if re.search(r"(?:^|\s)-m trader\.agent(?:\s|$)", compact):
         return True
     if "trader\\agent.py" in compact or "trader/agent.py" in compact:
         return True
@@ -585,12 +587,14 @@ def start_single_trader() -> dict[str, Any]:
                 stable_since = time.time()
             elif stable_since and time.time() - stable_since >= 4.0:
                 TRADER_PID_FILE.write_text(str(candidate), encoding="utf-8")
-                # Trader stable — also ensure swarm agents are running (non-blocking)
-                try:
-                    from trader.orchestrator import start_all_agents
-                    start_all_agents()
-                except Exception:
-                    pass
+                # Optional owl swarm — off by default (swarm was misclassified as
+                # duplicate traders and burned LLM cycles). Set KNIGHTTRADER_SWARM=1 to enable.
+                if os.environ.get("KNIGHTTRADER_SWARM", "").strip().lower() in ("1", "true", "yes", "on"):
+                    try:
+                        from trader.orchestrator import start_all_agents
+                        start_all_agents()
+                    except Exception:
+                        pass
                 return {"ok": True, "pid": candidate, "python": python_bin}
         else:
             stable_since = None
@@ -615,12 +619,12 @@ def start_single_trader() -> dict[str, Any]:
     candidate = owner or (collapsed[0] if len(collapsed) == 1 else None)
     if candidate and _pid_alive(candidate):
         TRADER_PID_FILE.write_text(str(candidate), encoding="utf-8")
-        # Trader stable — also ensure swarm agents are running (non-blocking)
-        try:
-            from trader.orchestrator import start_all_agents
-            start_all_agents()
-        except Exception:
-            pass
+        if os.environ.get("KNIGHTTRADER_SWARM", "").strip().lower() in ("1", "true", "yes", "on"):
+            try:
+                from trader.orchestrator import start_all_agents
+                start_all_agents()
+            except Exception:
+                pass
         return {"ok": True, "pid": candidate, "python": python_bin}
 
     try:

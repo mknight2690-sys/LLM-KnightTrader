@@ -9,11 +9,15 @@ import sys
 KEYS = (
     "hermes-llm-trader",
     "trader.agent",
+    "trader.agents",
+    "trader.orchestrator",
     "dashboard.server",
     "stack_launcher",
     "repair_agent",
+    "repair_agents",
     "stack_watchdog",
     "scripts.stack_launcher",
+    "_launch_trader",
 )
 
 ps = (

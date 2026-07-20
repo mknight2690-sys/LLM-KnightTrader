@@ -235,14 +235,16 @@ def reconcile_stack(*, allow_start_trader: bool = True) -> dict[str, Any]:
         or (_DASHBOARD_BOOT_TS and (time.time() - _DASHBOARD_BOOT_TS) < _BOOT_GRACE_SEC)
     )
 
-    # Reconcile Owl Swarm agents
+    # Reconcile Owl Swarm agents (opt-in only — default off to protect trading LLM)
     try:
-        from trader.orchestrator import all_agent_statuses, start_all_agents
-        agent_statuses = all_agent_statuses()
-        offline = [a for a in agent_statuses if a.get("status") == "offline"]
-        if offline and not in_boot_grace and allow_start_trader:
-            start_all_agents()
-            actions.append(f"start_agents:{len(offline)}")
+        swarm_on = os.environ.get("KNIGHTTRADER_SWARM", "").strip().lower() in ("1", "true", "yes", "on")
+        if swarm_on:
+            from trader.orchestrator import all_agent_statuses, start_all_agents
+            agent_statuses = all_agent_statuses()
+            offline = [a for a in agent_statuses if a.get("status") == "offline"]
+            if offline and not in_boot_grace and allow_start_trader:
+                start_all_agents()
+                actions.append(f"start_agents:{len(offline)}")
     except Exception:
         pass
 

@@ -199,7 +199,10 @@ REPAIR_AGENTS = (
 
 
 def _start_orchestrator_agents() -> dict:
-    """Launch all Owl Swarm agents via the orchestrator."""
+    """Launch Owl Swarm agents only when KNIGHTTRADER_SWARM is enabled."""
+    if os.environ.get("KNIGHTTRADER_SWARM", "").strip().lower() not in ("1", "true", "yes", "on"):
+        print("Owl Swarm skipped (KNIGHTTRADER_SWARM off)", flush=True)
+        return {"ok": True, "skipped": True, "reason": "KNIGHTTRADER_SWARM off"}
     print("Starting Owl Swarm agents...", flush=True)
     try:
         result = start_all_agents()
